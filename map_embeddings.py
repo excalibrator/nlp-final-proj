@@ -23,6 +23,12 @@ import re
 import sys
 import time
 
+import tensorflow
+from tensorflow import keras
+from keras.models import Sequential
+from keras.layers.core import Dense, Dropout, Activation
+from keras.optimizers import SGD
+
 
 def dropout(m, p):
     if p <= 0.0:
@@ -49,6 +55,27 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         ans += m[ind0, ind1]
         m[ind0, ind1] = minimum
     return ans / k
+
+def compressing_network(network_data):
+
+    model = Sequential()
+    model.add(Dense(20, 64, init='uniform'))
+    model.add(Activation('tanh'))
+    model.add(Dense(64, 1, init='uniform'))
+    model.add(Activation('softmax'))
+
+    # we train it
+    model.compile(loss='mse', optimizer='sgd')
+    # model.fit(X_train, y_train, nb_epoch=20, batch_size=16)
+
+    # we build a new model with the activations of the old model
+    # this model is truncated after the first layer
+    model2 = Sequential()
+    model2.add(Dense(20, 64, weights=model.layers[0].get_weights()))
+    model2.add(Activation('tanh'))
+
+    model2.compile()
+    # activations = model2._predict(X_batch)
 
 
 def main():
@@ -146,6 +173,9 @@ def main():
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
+
+    compressing_network(x)
+    compressing_network(z)
 
     # NumPy/CuPy management
     if args.cuda:
