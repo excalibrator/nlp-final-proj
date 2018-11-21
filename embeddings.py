@@ -45,9 +45,7 @@ def read(file, threshold=0, vocabulary=None, dtype='float'):
             elif vocabulary is not None and word in vocabulary:
                 words.append(word)
                 matrix.append(np.fromstring(vec, sep=' ', dtype=dtype))
-    print("before: ", matrix.shape)
     matrix = np.array(matrix)
-    print("after: ", matrix.shape)
     return (words, matrix) if vocabulary is None else (words, np.array(matrix, dtype=dtype))
 
 def write(words, matrix, file):

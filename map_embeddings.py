@@ -23,11 +23,14 @@ import re
 import sys
 import time
 
-import tensorflow
+import os
+import tensorflow as tf
 from tensorflow import keras
-from keras.models import Sequential
-from keras.layers.core import Dense, Dropout, Activation
-from keras.optimizers import SGD
+from tensorflow.python.keras.models import Sequential
+from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
+from tensorflow.python.keras.optimizers import SGD
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
 def dropout(m, p):
@@ -57,25 +60,35 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
     return ans / k
 
 def compressing_network(network_data):
+    dense_layer = tf.keras.layers.Dense(50, input_shape=(network_data.shape[1],))
 
-    model = Sequential()
-    model.add(Dense(20, 64, init='uniform'))
-    model.add(Activation('tanh'))
-    model.add(Dense(64, 1, init='uniform'))
-    model.add(Activation('softmax'))
+    model = tf.keras.models.Sequential([
+        tf.keras.layers.Flatten(),
+        dense_layer,
+        tf.keras.layers.Dense(300, activation=tf.nn.sigmoid)
+        ])
 
+    print(network_data.shape)
     # we train it
-    model.compile(loss='mse', optimizer='sgd')
-    # model.fit(X_train, y_train, nb_epoch=20, batch_size=16)
+    model.compile(optimizer='adam',
+              loss='mean_squared_error')
 
-    # we build a new model with the activations of the old model
-    # this model is truncated after the first layer
-    model2 = Sequential()
-    model2.add(Dense(20, 64, weights=model.layers[0].get_weights()))
-    model2.add(Activation('tanh'))
+    data = numpy.array(network_data)
 
-    model2.compile()
-    # activations = model2._predict(X_batch)
+    model.fit(data, data, epochs=5, batch_size=50)
+
+    model2 = tf.keras.models.Sequential([
+        tf.keras.layers.Flatten(),
+        dense_layer
+        ])
+
+    model.compile(optimizer='adam',
+              loss='mean_squared_error')
+    activations = model2.predict(data)
+
+    print("compressed to ", activations.shape)
+
+    return activations
 
 
 def main():
@@ -169,13 +182,15 @@ def main():
         dtype = 'float64'
 
     # Read input embeddings
+    print("reading embeddings and compressing...")
     srcfile = open(args.src_input, encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
+    x = compressing_network(x)
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
+    z = compressing_network(z)
 
-    compressing_network(x)
-    compressing_network(z)
+    print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
     if args.cuda:
