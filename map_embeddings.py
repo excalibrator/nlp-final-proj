@@ -229,7 +229,7 @@ def main():
 
     print("seed dictionary built")
 
-    
+    print("reading validation dictionary...")
     # Read validation dictionary
     if args.validation is not None:
         f = open(args.validation, encoding=args.encoding, errors='surrogateescape')
@@ -248,10 +248,13 @@ def main():
         oov -= vocab  # If one of the translation options is in the vocabulary, then the entry is not an oov
         validation_coverage = len(validation) / (len(validation) + len(oov))
 
+    print("read validation dictionary")
+
     # Create log file
     if args.log:
         log = open(args.log, mode='w', encoding=args.encoding, errors='surrogateescape')
 
+    print("allocating memory...")
     # Allocate memory
     xw = xp.empty_like(x)
     zw = xp.empty_like(z)
@@ -271,6 +274,9 @@ def main():
     knn_sim_fwd = xp.zeros(src_size, dtype=dtype)
     knn_sim_bwd = xp.zeros(trg_size, dtype=dtype)
 
+    print("allocated memory")
+
+    print("beginning training...")
     # Training loop
     best_objective = objective = -100.
     it = 1
@@ -293,11 +299,11 @@ def main():
             w = vt.T.dot(u.T)
             x.dot(w, out=xw)
             zw[:] = z
-        elif args.unconstrained:  # unconstrained mapping
-            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-            w = x_pseudoinv.dot(z[trg_indices])
-            x.dot(w, out=xw)
-            zw[:] = z
+        # elif args.unconstrained:  # unconstrained mapping
+        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+        #     w = x_pseudoinv.dot(z[trg_indices])
+        #     x.dot(w, out=xw)
+        #     zw[:] = z
         else:  # advanced mapping
 
             # TODO xw.dot(wx2, out=xw) and alike not working
@@ -420,6 +426,9 @@ def main():
         t = time.time()
         it += 1
 
+    print("finished training")
+
+    print("writing embeddings...")
     # Write mapped embeddings
     srcfile = open(args.src_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_output, mode='w', encoding=args.encoding, errors='surrogateescape')
@@ -427,6 +436,8 @@ def main():
     embeddings.write(trg_words, zw, trgfile)
     srcfile.close()
     trgfile.close()
+
+    print("wrote embeddings")
 
 
 if __name__ == '__main__':
