@@ -191,40 +191,41 @@ def main():
             knn_sim_fwd = topk_mean(sim, k=args.csls_neighborhood)
             knn_sim_bwd = topk_mean(sim.T, k=args.csls_neighborhood)
             sim -= knn_sim_fwd[:, xp.newaxis]/2 + knn_sim_bwd/2
-        if args.direction == 'forward':
-            src_indices = xp.arange(sim_size)
-            trg_indices = sim.argmax(axis=1)
-        elif args.direction == 'backward':
-            src_indices = sim.argmax(axis=0)
-            trg_indices = xp.arange(sim_size)
-        elif args.direction == 'union':
+        # if args.direction == 'forward':
+        #     src_indices = xp.arange(sim_size)
+        #     trg_indices = sim.argmax(axis=1)
+        # elif args.direction == 'backward':
+        #     src_indices = sim.argmax(axis=0)
+        #     trg_indices = xp.arange(sim_size)
+        # el
+        if args.direction == 'union':
             src_indices = xp.concatenate((xp.arange(sim_size), sim.argmax(axis=0)))
             trg_indices = xp.concatenate((sim.argmax(axis=1), xp.arange(sim_size)))
         del xsim, zsim, sim
-    elif args.init_numerals:
-        numeral_regex = re.compile('^[0-9]+$')
-        src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
-        trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
-        numerals = src_numerals.intersection(trg_numerals)
-        for word in numerals:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    elif args.init_identical:
-        identical = set(src_words).intersection(set(trg_words))
-        for word in identical:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    else:
-        f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
-        for line in f:
-            src, trg = line.split()
-            try:
-                src_ind = src_word2ind[src]
-                trg_ind = trg_word2ind[trg]
-                src_indices.append(src_ind)
-                trg_indices.append(trg_ind)
-            except KeyError:
-                print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
+    # elif args.init_numerals:
+    #     numeral_regex = re.compile('^[0-9]+$')
+    #     src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
+    #     trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
+    #     numerals = src_numerals.intersection(trg_numerals)
+    #     for word in numerals:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # elif args.init_identical:
+    #     identical = set(src_words).intersection(set(trg_words))
+    #     for word in identical:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # else:
+    #     f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
+    #     for line in f:
+    #         src, trg = line.split()
+    #         try:
+    #             src_ind = src_word2ind[src]
+    #             trg_ind = trg_word2ind[trg]
+    #             src_indices.append(src_ind)
+    #             trg_indices.append(trg_ind)
+    #         except KeyError:
+    #             print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
 
     print("seed dictionary built")
 
@@ -307,11 +308,11 @@ def main():
             def whitening_transformation(m):
                 u, s, vt = xp.linalg.svd(m, full_matrices=False)
                 return vt.T.dot(xp.diag(1/s)).dot(vt)
-            if args.whiten:
-                wx1 = whitening_transformation(xw[src_indices])
-                wz1 = whitening_transformation(zw[trg_indices])
-                xw = xw.dot(wx1)
-                zw = zw.dot(wz1)
+            # if args.whiten:
+            #     wx1 = whitening_transformation(xw[src_indices])
+            #     wz1 = whitening_transformation(zw[trg_indices])
+            #     xw = xw.dot(wx1)
+            #     zw = zw.dot(wz1)
 
             # STEP 2: Orthogonal mapping
             wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
@@ -324,14 +325,14 @@ def main():
             zw *= s**args.trg_reweight
 
             # STEP 4: De-whitening
-            if args.src_dewhiten == 'src':
-                xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            elif args.src_dewhiten == 'trg':
-                xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-            if args.trg_dewhiten == 'src':
-                zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            elif args.trg_dewhiten == 'trg':
-                zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+            # if args.src_dewhiten == 'src':
+            #     xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            # elif args.src_dewhiten == 'trg':
+            #     xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+            # if args.trg_dewhiten == 'src':
+            #     zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            # elif args.trg_dewhiten == 'trg':
+            #     zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
 
             # STEP 5: Dimensionality reduction
             if args.dim_reduction > 0:
@@ -367,22 +368,24 @@ def main():
                     simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
                     simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
                     dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            if args.direction == 'forward':
-                src_indices = src_indices_forward
-                trg_indices = trg_indices_forward
-            elif args.direction == 'backward':
-                src_indices = src_indices_backward
-                trg_indices = trg_indices_backward
-            elif args.direction == 'union':
+            # if args.direction == 'forward':
+            #     src_indices = src_indices_forward
+            #     trg_indices = trg_indices_forward
+            # elif args.direction == 'backward':
+            #     src_indices = src_indices_backward
+            #     trg_indices = trg_indices_backward
+            # el
+            if args.direction == 'union':
                 src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
                 trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
             # Objective function evaluation
-            if args.direction == 'forward':
-                objective = xp.mean(best_sim_forward).tolist()
-            elif args.direction == 'backward':
-                objective = xp.mean(best_sim_backward).tolist()
-            elif args.direction == 'union':
+            # if args.direction == 'forward':
+            #     objective = xp.mean(best_sim_forward).tolist()
+            # elif args.direction == 'backward':
+            #     objective = xp.mean(best_sim_backward).tolist()
+            # el
+            if args.direction == 'union':
                 objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
             if objective - best_objective >= args.threshold:
                 last_improvement = it
