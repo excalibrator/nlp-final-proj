@@ -228,41 +228,40 @@ def main():
             knn_sim_fwd = topk_mean(sim, k=args.csls_neighborhood)
             knn_sim_bwd = topk_mean(sim.T, k=args.csls_neighborhood)
             sim -= knn_sim_fwd[:, xp.newaxis]/2 + knn_sim_bwd/2
-        # if args.direction == 'forward':
-        #     src_indices = xp.arange(sim_size)
-        #     trg_indices = sim.argmax(axis=1)
-        # elif args.direction == 'backward':
-        #     src_indices = sim.argmax(axis=0)
-        #     trg_indices = xp.arange(sim_size)
-        # el
-        if args.direction == 'union':
+        if args.direction == 'forward':
+            src_indices = xp.arange(sim_size)
+            trg_indices = sim.argmax(axis=1)
+        elif args.direction == 'backward':
+            src_indices = sim.argmax(axis=0)
+            trg_indices = xp.arange(sim_size)
+        elif args.direction == 'union':
             src_indices = xp.concatenate((xp.arange(sim_size), sim.argmax(axis=0)))
             trg_indices = xp.concatenate((sim.argmax(axis=1), xp.arange(sim_size)))
         del xsim, zsim, sim
-    # elif args.init_numerals:
-    #     numeral_regex = re.compile('^[0-9]+$')
-    #     src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
-    #     trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
-    #     numerals = src_numerals.intersection(trg_numerals)
-    #     for word in numerals:
-    #         src_indices.append(src_word2ind[word])
-    #         trg_indices.append(trg_word2ind[word])
-    # elif args.init_identical:
-    #     identical = set(src_words).intersection(set(trg_words))
-    #     for word in identical:
-    #         src_indices.append(src_word2ind[word])
-    #         trg_indices.append(trg_word2ind[word])
-    # else:
-    #     f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
-    #     for line in f:
-    #         src, trg = line.split()
-    #         try:
-    #             src_ind = src_word2ind[src]
-    #             trg_ind = trg_word2ind[trg]
-    #             src_indices.append(src_ind)
-    #             trg_indices.append(trg_ind)
-    #         except KeyError:
-    #             print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
+    elif args.init_numerals:
+        numeral_regex = re.compile('^[0-9]+$')
+        src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
+        trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
+        numerals = src_numerals.intersection(trg_numerals)
+        for word in numerals:
+            src_indices.append(src_word2ind[word])
+            trg_indices.append(trg_word2ind[word])
+    elif args.init_identical:
+        identical = set(src_words).intersection(set(trg_words))
+        for word in identical:
+            src_indices.append(src_word2ind[word])
+            trg_indices.append(trg_word2ind[word])
+    else:
+        f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
+        for line in f:
+            src, trg = line.split()
+            try:
+                src_ind = src_word2ind[src]
+                trg_ind = trg_word2ind[trg]
+                src_indices.append(src_ind)
+                trg_indices.append(trg_ind)
+            except KeyError:
+                print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
 
     print("seed dictionary built")
 
@@ -336,11 +335,11 @@ def main():
             w = vt.T.dot(u.T)
             x.dot(w, out=xw)
             zw[:] = z
-        # elif args.unconstrained:  # unconstrained mapping
-        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-        #     w = x_pseudoinv.dot(z[trg_indices])
-        #     x.dot(w, out=xw)
-        #     zw[:] = z
+        elif args.unconstrained:  # unconstrained mapping
+            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+            w = x_pseudoinv.dot(z[trg_indices])
+            x.dot(w, out=xw)
+            zw[:] = z
         else:  # advanced mapping
 
             # TODO xw.dot(wx2, out=xw) and alike not working
@@ -412,24 +411,22 @@ def main():
                     simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
                     simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
                     dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            # if args.direction == 'forward':
-            #     src_indices = src_indices_forward
-            #     trg_indices = trg_indices_forward
-            # elif args.direction == 'backward':
-            #     src_indices = src_indices_backward
-            #     trg_indices = trg_indices_backward
-            # el
-            if args.direction == 'union':
+            if args.direction == 'forward':
+                src_indices = src_indices_forward
+                trg_indices = trg_indices_forward
+            elif args.direction == 'backward':
+                src_indices = src_indices_backward
+                trg_indices = trg_indices_backward
+            elif args.direction == 'union':
                 src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
                 trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
             # Objective function evaluation
-            # if args.direction == 'forward':
-            #     objective = xp.mean(best_sim_forward).tolist()
-            # elif args.direction == 'backward':
-            #     objective = xp.mean(best_sim_backward).tolist()
-            # el
-            if args.direction == 'union':
+            if args.direction == 'forward':
+                objective = xp.mean(best_sim_forward).tolist()
+            elif args.direction == 'backward':
+                objective = xp.mean(best_sim_backward).tolist()
+            elif args.direction == 'union':
                 objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
             if objective - best_objective >= args.threshold:
                 last_improvement = it
