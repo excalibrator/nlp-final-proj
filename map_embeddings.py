@@ -22,37 +22,7 @@ import numpy as np
 import re
 import sys
 import time
-
-import os
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.python.keras.models import Sequential
-from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
-from tensorflow.python.keras.optimizers import SGD
-
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-
-import argparse
-import random
-import numpy as np
-import time
-import torch
-from torch import optim
-from lf_evaluator import *
-from models import *
-from data import *
-from utils import *
-import torch.nn.functional as F
-from torch.autograd import Variable
-import time
 import math
-
-
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
 def dropout(m, p):
@@ -81,64 +51,10 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         m[ind0, ind1] = minimum
     return ans / k
 
-# def compressing_network(network_data):
-#     dense_layer = tf.keras.layers.Dense(50, input_shape=(network_data.shape[1],))
-
-#     model = tf.keras.models.Sequential([
-#         tf.keras.layers.Flatten(),
-#         dense_layer,
-#         tf.keras.layers.Dense(300, activation=tf.nn.sigmoid)
-#         ])
-
-#     print(network_data.shape)
-#     # we train it
-#     model.compile(optimizer='adam',
-#               loss='mean_squared_error')
-
-#     data = numpy.array(network_data)
-
-#     model.fit(data, data, epochs=5, batch_size=50)
-
-#     model2 = tf.keras.models.Sequential([
-#         tf.keras.layers.Flatten(),
-#         dense_layer
-#         ])
-
-#     model.compile(optimizer='adam',
-#               loss='mean_squared_error')
-#     activations = model2.predict(data)
-
-#     print("compressed to ", activations.shape)
-
-#     return activations
-
-
-
-
-
-#Compressing Network 
-#May need to be trained before using it
-class Compressing_Network(nn.Module):
-
-    def __init__(self,input_dim,hidden_dim,final_dim,dropout_rate):
-        super(compressing_network,self).__init__()
-        self.dropout = nn.Dropout(dropout_rate)
-        self.embed1 = nn.Linear(input_dim,hidden_dim)
-
-        self.embed2 = nn.Linear(hidden_dim,final_dim)
-
-    def init_weight():
-        nn.init.xavier_uniform_(self.fc1.weight_hh_l0, gain=1)
-        nn.init.xavier_uniform_(self.fc2.weight_ih_l0, gain=1)
-
-    def forward(self,input):
-        embeddings = self.embed2(self.dropout(F.relu(self.embed1(input))))
-        return embeddings 
-
 #This is the implementation of Gaussian kernel
-# The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
-def kernel(x,y,lamda):
-    coefficient = 1/(2* lamda*lamda)
+# The lambda values in Li's paper are [2,5,10,20,40,80]
+def kernel(x,y, l):
+    coefficient = 1/(2* l*l)
     first_term = 1/math.pi * math.e 
     second_term = x*x + y*y
     final = coefficient * (first_term - second_term)
@@ -146,7 +62,7 @@ def kernel(x,y,lamda):
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
-def MMD(batch_size,W,X,Y):
+def MMD(batch_size, W, X, Y):
     norm = 1/(batch_size* batch_size)
     first_term = 0
     second_term = 0
@@ -164,12 +80,13 @@ def update_W(W,beta):
     return W
 
 
-#The refienment step to improve performance after training
+#The refinement step to improve performance after training
 def refinement_step():
 
 
 
     return
+
 
 def main():
     # Parse command line arguments
@@ -262,28 +179,10 @@ def main():
         dtype = 'float64'
 
     # Read input embeddings
-    input_dim = 300
-    hidden_dim = 150
-    final_dim = 50
-    dropout_rate = 0.2
-
-    #Trying to use Compressing Network
-    CN_embedding = Compressing_Network(input_dim,hidden_dim,final_dim,dropout_rate)
-    compress_optimizer = optim.Adam(CN_embedding.parameters(), lr=0.001)
-
-
-
-
-    print("reading embeddings and compressing...")
     srcfile = open(args.src_input, encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
-    #x = compressing_network(x)
-    x = CN_embedding.forward(x)
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
-    #z = compressing_network(z)
-    z = CN_embedding.forward(z)
-    print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
     if args.cuda:
@@ -329,44 +228,45 @@ def main():
             knn_sim_fwd = topk_mean(sim, k=args.csls_neighborhood)
             knn_sim_bwd = topk_mean(sim.T, k=args.csls_neighborhood)
             sim -= knn_sim_fwd[:, xp.newaxis]/2 + knn_sim_bwd/2
-        if args.direction == 'forward':
-            src_indices = xp.arange(sim_size)
-            trg_indices = sim.argmax(axis=1)
-        elif args.direction == 'backward':
-            src_indices = sim.argmax(axis=0)
-            trg_indices = xp.arange(sim_size)
-        elif args.direction == 'union':
+        # if args.direction == 'forward':
+        #     src_indices = xp.arange(sim_size)
+        #     trg_indices = sim.argmax(axis=1)
+        # elif args.direction == 'backward':
+        #     src_indices = sim.argmax(axis=0)
+        #     trg_indices = xp.arange(sim_size)
+        # el
+        if args.direction == 'union':
             src_indices = xp.concatenate((xp.arange(sim_size), sim.argmax(axis=0)))
             trg_indices = xp.concatenate((sim.argmax(axis=1), xp.arange(sim_size)))
         del xsim, zsim, sim
-    elif args.init_numerals:
-        numeral_regex = re.compile('^[0-9]+$')
-        src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
-        trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
-        numerals = src_numerals.intersection(trg_numerals)
-        for word in numerals:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    elif args.init_identical:
-        identical = set(src_words).intersection(set(trg_words))
-        for word in identical:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    else:
-        f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
-        for line in f:
-            src, trg = line.split()
-            try:
-                src_ind = src_word2ind[src]
-                trg_ind = trg_word2ind[trg]
-                src_indices.append(src_ind)
-                trg_indices.append(trg_ind)
-            except KeyError:
-                print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
+    # elif args.init_numerals:
+    #     numeral_regex = re.compile('^[0-9]+$')
+    #     src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
+    #     trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
+    #     numerals = src_numerals.intersection(trg_numerals)
+    #     for word in numerals:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # elif args.init_identical:
+    #     identical = set(src_words).intersection(set(trg_words))
+    #     for word in identical:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # else:
+    #     f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
+    #     for line in f:
+    #         src, trg = line.split()
+    #         try:
+    #             src_ind = src_word2ind[src]
+    #             trg_ind = trg_word2ind[trg]
+    #             src_indices.append(src_ind)
+    #             trg_indices.append(trg_ind)
+    #         except KeyError:
+    #             print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
 
     print("seed dictionary built")
 
-    
+    print("reading validation dictionary...")
     # Read validation dictionary
     if args.validation is not None:
         f = open(args.validation, encoding=args.encoding, errors='surrogateescape')
@@ -385,10 +285,13 @@ def main():
         oov -= vocab  # If one of the translation options is in the vocabulary, then the entry is not an oov
         validation_coverage = len(validation) / (len(validation) + len(oov))
 
+    print("read validation dictionary")
+
     # Create log file
     if args.log:
         log = open(args.log, mode='w', encoding=args.encoding, errors='surrogateescape')
 
+    print("allocating memory...")
     # Allocate memory
     xw = xp.empty_like(x)
     zw = xp.empty_like(z)
@@ -408,6 +311,9 @@ def main():
     knn_sim_fwd = xp.zeros(src_size, dtype=dtype)
     knn_sim_bwd = xp.zeros(trg_size, dtype=dtype)
 
+    print("allocated memory")
+
+    print("beginning training...")
     # Training loop
     best_objective = objective = -100.
     it = 1
@@ -418,7 +324,6 @@ def main():
     while True:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
-
         if it - last_improvement > args.stochastic_interval:
             if keep_prob >= 1.0:
                 end = True
@@ -431,11 +336,11 @@ def main():
             w = vt.T.dot(u.T)
             x.dot(w, out=xw)
             zw[:] = z
-        elif args.unconstrained:  # unconstrained mapping
-            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-            w = x_pseudoinv.dot(z[trg_indices])
-            x.dot(w, out=xw)
-            zw[:] = z
+        # elif args.unconstrained:  # unconstrained mapping
+        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+        #     w = x_pseudoinv.dot(z[trg_indices])
+        #     x.dot(w, out=xw)
+        #     zw[:] = z
         else:  # advanced mapping
 
             # TODO xw.dot(wx2, out=xw) and alike not working
@@ -446,11 +351,11 @@ def main():
             def whitening_transformation(m):
                 u, s, vt = xp.linalg.svd(m, full_matrices=False)
                 return vt.T.dot(xp.diag(1/s)).dot(vt)
-            if args.whiten:
-                wx1 = whitening_transformation(xw[src_indices])
-                wz1 = whitening_transformation(zw[trg_indices])
-                xw = xw.dot(wx1)
-                zw = zw.dot(wz1)
+            # if args.whiten:
+            #     wx1 = whitening_transformation(xw[src_indices])
+            #     wz1 = whitening_transformation(zw[trg_indices])
+            #     xw = xw.dot(wx1)
+            #     zw = zw.dot(wz1)
 
             # STEP 2: Orthogonal mapping
             wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
@@ -463,14 +368,14 @@ def main():
             zw *= s**args.trg_reweight
 
             # STEP 4: De-whitening
-            if args.src_dewhiten == 'src':
-                xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            elif args.src_dewhiten == 'trg':
-                xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-            if args.trg_dewhiten == 'src':
-                zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            elif args.trg_dewhiten == 'trg':
-                zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+            # if args.src_dewhiten == 'src':
+            #     xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            # elif args.src_dewhiten == 'trg':
+            #     xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+            # if args.trg_dewhiten == 'src':
+            #     zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            # elif args.trg_dewhiten == 'trg':
+            #     zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
 
             # STEP 5: Dimensionality reduction
             if args.dim_reduction > 0:
@@ -481,8 +386,7 @@ def main():
         if end:
             break
         else:
-            #Need to Update here for Updating W
-
+             #Need to Update here for Updating W
             # Update the training dictionary
             if args.direction in ('forward', 'union'):
                 if args.csls_neighborhood > 0:
@@ -508,24 +412,24 @@ def main():
                     simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
                     simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
                     dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            if args.direction == 'forward':
-                src_indices = src_indices_forward
-                trg_indices = trg_indices_forward
-            elif args.direction == 'backward':
-                src_indices = src_indices_backward
-                trg_indices = trg_indices_backward
-            elif args.direction == 'union':
+            # if args.direction == 'forward':
+            #     src_indices = src_indices_forward
+            #     trg_indices = trg_indices_forward
+            # elif args.direction == 'backward':
+            #     src_indices = src_indices_backward
+            #     trg_indices = trg_indices_backward
+            # el
+            if args.direction == 'union':
                 src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
                 trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
-            #Need to change objective to MMD
-
             # Objective function evaluation
-            if args.direction == 'forward':
-                objective = xp.mean(best_sim_forward).tolist()
-            elif args.direction == 'backward':
-                objective = xp.mean(best_sim_backward).tolist()
-            elif args.direction == 'union':
+            # if args.direction == 'forward':
+            #     objective = xp.mean(best_sim_forward).tolist()
+            # elif args.direction == 'backward':
+            #     objective = xp.mean(best_sim_backward).tolist()
+            # el
+            if args.direction == 'union':
                 objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
             if objective - best_objective >= args.threshold:
                 last_improvement = it
@@ -560,6 +464,9 @@ def main():
         t = time.time()
         it += 1
 
+    print("finished training")
+
+    print("writing embeddings...")
     # Write mapped embeddings
     srcfile = open(args.src_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_output, mode='w', encoding=args.encoding, errors='surrogateescape')
@@ -567,6 +474,8 @@ def main():
     embeddings.write(trg_words, zw, trgfile)
     srcfile.close()
     trgfile.close()
+
+    print("wrote embeddings")
 
 
 if __name__ == '__main__':
