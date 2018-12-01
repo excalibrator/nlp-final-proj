@@ -132,11 +132,11 @@ class Compressing_Network(nn.Module):
         nn.init.xavier_uniform_(self.fc2.weight_ih_l0, gain=1)
 
     def forward(self,input):
-        embeddings = self.embed1(self.dropout(F.relu(self.embed2(input))))
+        embeddings = self.embed2(self.dropout(F.relu(self.embed1(input))))
         return embeddings 
 
 #This is the implementation of Gaussian kernel
-# The lamda value can be the values in Li's paper, which are [2,5,10,20,40,80]
+# The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
 def kernel(x,y,lamda):
     coefficient = 1/(2* lamda*lamda)
     first_term = 1/math.pi * math.e 
