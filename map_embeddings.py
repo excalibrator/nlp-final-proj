@@ -23,36 +23,27 @@ import re
 import sys
 import time
 
-import os
-import tensorflow as tf
-from tensorflow import keras
-from tensorflow.python.keras.models import Sequential
-from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
-from tensorflow.python.keras.optimizers import SGD
+# import os
+# import tensorflow as tf
+# from tensorflow import keras
+# from tensorflow.python.keras.models import Sequential
+# from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
+# from tensorflow.python.keras.optimizers import SGD
 
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# import torch.optim as optim
 
 import argparse
 import random
 import numpy as np
 import time
-import torch
-from torch import optim
-from lf_evaluator import *
-from models import *
-from data import *
-from utils import *
-import torch.nn.functional as F
-from torch.autograd import Variable
-import time
 import math
+from sklearn.decomposition import PCA
 
-
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
 def dropout(m, p):
@@ -81,59 +72,57 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         m[ind0, ind1] = minimum
     return ans / k
 
-# def compressing_network(network_data):
-#     dense_layer = tf.keras.layers.Dense(50, input_shape=(network_data.shape[1],))
 
-#     model = tf.keras.models.Sequential([
-#         tf.keras.layers.Flatten(),
-#         dense_layer,
-#         tf.keras.layers.Dense(300, activation=tf.nn.sigmoid)
-#         ])
+##Word embedding Dimension Reduction
+def compressing(x_train,original_dim,target_dim):
 
-#     print(network_data.shape)
-#     # we train it
-#     model.compile(optimizer='adam',
-#               loss='mean_squared_error')
+    X_train = np.asarray(x_train)
+    pca_embeddings = {}
 
-#     data = numpy.array(network_data)
+    # PCA to get Top Components
+    pca =  PCA(n_components = original_dim)
+    X_train = X_train - np.mean(X_train)
+    #print("Working: ",X_train.dtype)
+    X_fit = pca.fit_transform(X_train)
+    U1 = pca.components_
 
-#     model.fit(data, data, epochs=5, batch_size=50)
+    z = []
 
-#     model2 = tf.keras.models.Sequential([
-#         tf.keras.layers.Flatten(),
-#         dense_layer
-#         ])
+    # Removing Projections on Top Components
+    for i in range(len(X_train)):
+        x = X_train[i]
+        for u in U1[0:7]:        
+            x = x - np.dot(u.transpose(),x) * u 
+        z.append(x)
 
-#     model.compile(optimizer='adam',
-#               loss='mean_squared_error')
-#     activations = model2.predict(data)
-
-#     print("compressed to ", activations.shape)
-
-#     return activations
-
-
+    z = np.asarray(z)
+    #print("Z: ",z.dtype)
+    # PCA Dim Reduction
+    pca =  PCA(n_components = target_dim)
+    X_train = z - np.mean(z)
+    #print("Not Working: ",X_train.dtype)
+    X_new_final = pca.fit_transform(X_train)
 
 
+    # PCA to do Post-Processing Again
+    pca =  PCA(n_components = target_dim)
+    X_new = X_new_final - np.mean(X_new_final)
+    X_new = pca.fit_transform(X_new)
+    Ufit = pca.components_
 
-#Compressing Network 
-#May need to be trained before using it
-class Compressing_Network(nn.Module):
+    X_new_final = X_new_final - np.mean(X_new_final)
 
-    def __init__(self,input_dim,hidden_dim,final_dim,dropout_rate):
-        super(compressing_network,self).__init__()
-        self.dropout = nn.Dropout(dropout_rate)
-        self.embed1 = nn.Linear(input_dim,hidden_dim)
+    final_pca_embeddings = []
 
-        self.embed2 = nn.Linear(hidden_dim,final_dim)
+    for i in range(len(X_new_final)):
+        final_pca_embeddings.append(X_new_final[i])
+        for u in Ufit[0:7]:
+            final_pca_embeddings[i] = final_pca_embeddings[i] - np.dot(u.transpose(),final_pca_embeddings[i]) * u 
+    return np.asarray(final_pca_embeddings)
+            
 
-    def init_weight():
-        nn.init.xavier_uniform_(self.fc1.weight_hh_l0, gain=1)
-        nn.init.xavier_uniform_(self.fc2.weight_ih_l0, gain=1)
 
-    def forward(self,input):
-        embeddings = self.embed2(self.dropout(F.relu(self.embed1(input))))
-        return embeddings 
+
 
 #This is the implementation of Gaussian kernel
 # The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
@@ -169,7 +158,7 @@ def refinement_step():
 
 
 
-    return
+    return 0
 
 def main():
     # Parse command line arguments
@@ -261,16 +250,6 @@ def main():
     elif args.precision == 'fp64':
         dtype = 'float64'
 
-    # Read input embeddings
-    input_dim = 300
-    hidden_dim = 150
-    final_dim = 50
-    dropout_rate = 0.2
-
-    #Trying to use Compressing Network
-    CN_embedding = Compressing_Network(input_dim,hidden_dim,final_dim,dropout_rate)
-    compress_optimizer = optim.Adam(CN_embedding.parameters(), lr=0.001)
-
 
 
 
@@ -278,11 +257,12 @@ def main():
     srcfile = open(args.src_input, encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
-    #x = compressing_network(x)
-    x = CN_embedding.forward(x)
+
+    x = compressing(x,len(x[0]),int(len(x[0])/2))
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
-    #z = compressing_network(z)
-    z = CN_embedding.forward(z)
+
+
+    z = compressing(z,len(z[0]),int(len(z[0])/2))
     print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
@@ -427,6 +407,8 @@ def main():
 
         # Update the embedding mapping
         if args.orthogonal or not end:  # orthogonal mapping
+            #print("Z: ",z.shape)
+            #print("X: ",x.shape)
             u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
             w = vt.T.dot(u.T)
             x.dot(w, out=xw)
