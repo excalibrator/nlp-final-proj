@@ -30,6 +30,28 @@ from tensorflow.python.keras.models import Sequential
 from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
 from tensorflow.python.keras.optimizers import SGD
 
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+import argparse
+import random
+import numpy as np
+import time
+import torch
+from torch import optim
+from lf_evaluator import *
+from models import *
+from data import *
+from utils import *
+import torch.nn.functional as F
+from torch.autograd import Variable
+import time
+import math
+
+
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
@@ -59,37 +81,95 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         m[ind0, ind1] = minimum
     return ans / k
 
-def compressing_network(network_data):
-    dense_layer = tf.keras.layers.Dense(50, input_shape=(network_data.shape[1],))
+# def compressing_network(network_data):
+#     dense_layer = tf.keras.layers.Dense(50, input_shape=(network_data.shape[1],))
 
-    model = tf.keras.models.Sequential([
-        tf.keras.layers.Flatten(),
-        dense_layer,
-        tf.keras.layers.Dense(300, activation=tf.nn.sigmoid)
-        ])
+#     model = tf.keras.models.Sequential([
+#         tf.keras.layers.Flatten(),
+#         dense_layer,
+#         tf.keras.layers.Dense(300, activation=tf.nn.sigmoid)
+#         ])
 
-    print(network_data.shape)
-    # we train it
-    model.compile(optimizer='adam',
-              loss='mean_squared_error')
+#     print(network_data.shape)
+#     # we train it
+#     model.compile(optimizer='adam',
+#               loss='mean_squared_error')
 
-    data = numpy.array(network_data)
+#     data = numpy.array(network_data)
 
-    model.fit(data, data, epochs=5, batch_size=50)
+#     model.fit(data, data, epochs=5, batch_size=50)
 
-    model2 = tf.keras.models.Sequential([
-        tf.keras.layers.Flatten(),
-        dense_layer
-        ])
+#     model2 = tf.keras.models.Sequential([
+#         tf.keras.layers.Flatten(),
+#         dense_layer
+#         ])
 
-    model.compile(optimizer='adam',
-              loss='mean_squared_error')
-    activations = model2.predict(data)
+#     model.compile(optimizer='adam',
+#               loss='mean_squared_error')
+#     activations = model2.predict(data)
 
-    print("compressed to ", activations.shape)
+#     print("compressed to ", activations.shape)
 
-    return activations
+#     return activations
 
+
+
+
+
+#Compressing Network 
+#May need to be trained before using it
+class Compressing_Network(nn.Module):
+
+    def __init__(self,input_dim,hidden_dim,final_dim,dropout_rate):
+        super(compressing_network,self).__init__()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.embed1 = nn.Linear(input_dim,hidden_dim)
+
+        self.embed2 = nn.Linear(hidden_dim,final_dim)
+
+    def init_weight():
+        nn.init.xavier_uniform_(self.fc1.weight_hh_l0, gain=1)
+        nn.init.xavier_uniform_(self.fc2.weight_ih_l0, gain=1)
+
+    def forward(self,input):
+        embeddings = self.embed1(self.dropout(F.relu(self.embed2(input))))
+        return embeddings 
+
+#This is the implementation of Gaussian kernel
+# The lamda value can be the values in Li's paper, which are [2,5,10,20,40,80]
+def kernel(x,y,lamda):
+    coefficient = 1/(2* lamda*lamda)
+    first_term = 1/math.pi * math.e 
+    second_term = x*x + y*y
+    final = coefficient * (first_term - second_term)
+    return final
+
+#The MMD part that will be used as objective(loss) during training
+#Assume both W,X,Y are numpy array
+def MMD(batch_size,W,X,Y):
+    norm = 1/(batch_size* batch_size)
+    first_term = 0
+    second_term = 0
+    third_term = 0
+    for i in range(batch_size):
+        for j in range(batch_size):
+            first_term  += kernel(W*X[i],W*X[j])
+            second_term += kernel(W*X[i],Y[j])
+            third_term += kernel(Y[i],Y[j])
+    objective = norm*(first_term - 2* second_term + third_term)
+    return objective
+
+def update_W(W,beta):
+    W = (1+ beta) * W - beta(W*W.transpose())* W
+    return W
+
+
+#The refienment step to improve performance after training
+def refinement_step():
+
+
+
+    return
 
 def main():
     # Parse command line arguments
@@ -182,14 +262,27 @@ def main():
         dtype = 'float64'
 
     # Read input embeddings
+    input_dim = 300
+    hidden_dim = 150
+    final_dim = 50
+    dropout_rate = 0.2
+
+    #Trying to use Compressing Network
+    CN_embedding = Compressing_Network(input_dim,hidden_dim,final_dim,dropout_rate)
+    compress_optimizer = optim.Adam(CN_embedding.parameters(), lr=0.001)
+
+
+
+
     print("reading embeddings and compressing...")
     srcfile = open(args.src_input, encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
-    x = compressing_network(x)
+    #x = compressing_network(x)
+    x = CN_embedding.forward(x)
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
-    z = compressing_network(z)
-
+    #z = compressing_network(z)
+    z = CN_embedding.forward(z)
     print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
@@ -325,6 +418,7 @@ def main():
     while True:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
+
         if it - last_improvement > args.stochastic_interval:
             if keep_prob >= 1.0:
                 end = True
@@ -387,6 +481,8 @@ def main():
         if end:
             break
         else:
+            #Need to Update here for Updating W
+
             # Update the training dictionary
             if args.direction in ('forward', 'union'):
                 if args.csls_neighborhood > 0:
@@ -421,6 +517,8 @@ def main():
             elif args.direction == 'union':
                 src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
                 trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
+
+            #Need to change objective to MMD
 
             # Objective function evaluation
             if args.direction == 'forward':
