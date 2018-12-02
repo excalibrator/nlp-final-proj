@@ -24,6 +24,302 @@ import sys
 import time
 import math
 
+import tensorflow as tf
+
+"""
+Return a TF variable with zeros of provided shape
+"""
+def zeros(shape):
+
+    return tf.Variable(tf.zeros(shape))
+
+"""
+Return a TF variable with numbers drawn from a normal distribution of zero mean
+and given standard deviation
+"""
+def normal(shape, std_dev):
+
+    return tf.Variable(tf.random_normal(shape, stddev = std_dev))
+
+class ReLULayer():
+
+    """
+    Initialize layer object with the given input and output dimensions
+
+    input_dim:  Dimension of inputs to the layer
+    output_dim: Dimension of outputs of the layer
+    """
+    def __init__(self, input_dim, output_dim):
+
+        # initialize weights and biases for the layer
+        self.W = normal([input_dim, output_dim], 1.0 / math.sqrt(input_dim))
+        self.b = zeros([output_dim])
+
+    """
+    Forward propagation in the layer
+
+    x: Input to the layer
+    """
+    def forward(self, x):
+
+        return tf.nn.relu(tf.matmul(x, self.W) + self.b)
+
+class SigmoidLayer():
+
+    """
+    Initialize layer object with the given input, output dimensions and dropout
+    retention probabilities
+
+    input_dim:    Dimension of inputs to the layer
+    output_dim:   Dimension of outputs of the layer
+    dropout_prob: Fraction of dropout retention in the layer
+    """
+    def __init__(self, input_dim, output_dim, dropout_prob = 1.0):
+
+        # initialize weights and biases for the layer
+        self.W = normal([input_dim, output_dim], 1.0 / math.sqrt(input_dim))
+        self.b = zeros([output_dim])
+
+        # store the dropout retention probability for later use
+        self.dropout_prob = dropout_prob
+
+    """
+    Forward propagation in the layer
+
+    x: Input to the layer
+    """
+    def forward(self, x):
+
+        return tf.sigmoid(tf.matmul(tf.nn.dropout(x, self.dropout_prob),
+                          self.W) + self.b)
+
+class DataSpaceNetwork():
+
+    """
+    Initialize network object with the given dimensions and batch size
+
+    dimensions: Dimensions of the all the layers of the network, including
+                input and output
+    batch_size: Number of training examples taken in the batch
+    """
+    def __init__(self, dimensions, batch_size):
+
+        # store 'dimensions' and 'batch_size' for later use
+        self.dimensions = dimensions
+        self.batch_size = batch_size
+
+        # store the layers as a list
+        self.layers = []
+
+        # all the layers except the last one is 'ReLU'
+        for dim_index in range(len(dimensions)-2):
+            self.layers.append(ReLULayer(dimensions[dim_index],
+                                         dimensions[dim_index+1]))
+
+        # last layer is 'Sigmoid' as we need the outputs to be in [0, 1]
+        self.layers.append(SigmoidLayer(dimensions[dim_index+1],
+                                        dimensions[dim_index+2]))
+
+    """
+    Forward propagation of the network
+
+    x: Input batch of samples from the uniform
+    """
+    def forward(self, x):
+
+        # initialize the first 'hidden' layer to the input
+        h = x
+
+        # for all the layers propagate the activation forward
+        # all layers have the 'forward()' method
+        for dim_index in range(len(self.dimensions)-1):
+            h = self.layers[dim_index].forward(h)
+
+        return h
+
+    """
+    Scale column for the MMD measure
+
+    num_gen:  Number of samples to be generated in one pass, 'N' in the paper
+    num_orig: Number of samples taken from dataset in one pass, 'M' in the paper
+    """
+    def makeScaleMatrix(self, num_gen, num_orig):
+
+        # first 'N' entries have '1/N', next 'M' entries have '-1/M'
+        s1 =  tf.constant(1.0 / num_gen, shape = [num_gen, 1])
+        s2 = -tf.constant(1.0 / num_orig, shape = [num_orig, 1])
+
+        return tf.concat([s1, s2], 0)
+
+    """
+    Calculates cost of the network, which is square root of the mixture of 'K'
+    RBF kernels
+
+    x:       Batch from the dataset
+    samples: Samples from the uniform distribution
+    sigma:   Bandwidth parameters for the 'K' kernels
+    """
+    def computeLoss(self, x, samples, sigma = [2, 5, 10, 20, 40, 80]):
+
+        # generate images from the provided uniform samples
+        gen_x = self.forward(samples)
+
+        # concatenation of the generated images and images from the dataset
+        # first 'N' rows are the generated ones, next 'M' are from the data
+        X = tf.concat([gen_x, x], 0)
+
+        # dot product between all combinations of rows in 'X'
+        XX = tf.matmul(X, tf.transpose(X))
+
+        # dot product of rows with themselves
+        X2 = tf.reduce_sum(X * X, 1, keep_dims = True)
+
+        # exponent entries of the RBF kernel (without the sigma) for each
+        # combination of the rows in 'X'
+        # -0.5 * (x^Tx - 2*x^Ty + y^Ty)
+        exponent = XX - 0.5 * X2 - 0.5 * tf.transpose(X2)
+
+        # scaling constants for each of the rows in 'X'
+        s = self.makeScaleMatrix(self.batch_size, self.batch_size)
+
+        # scaling factors of each of the kernel values, corresponding to the
+        # exponent values
+        S = tf.matmul(s, tf.transpose(s))
+
+        loss = 0
+
+        # for each bandwidth parameter, compute the MMD value and add them all
+        for i in range(len(sigma)):
+
+            # kernel values for each combination of the rows in 'X' 
+            kernel_val = tf.exp(1.0 / sigma[i] * exponent)
+            loss += tf.reduce_sum(S * kernel_val)
+
+        return tf.sqrt(loss)
+
+"""
+Generate figure of the given generated samples
+
+samples:    Samples generated by the network
+num_rows:   Number of rows in the generated figure
+num_cols:   Number of columns in the generated figure
+image_side: Width and height of a single image in the figure
+file_name:  File name for the generated figure to be saved
+"""
+def generateFigure(samples, num_rows, num_cols, image_side, file_name):
+
+    # initialize the figure object
+    figure, axes = plt.subplots(nrows = num_rows, ncols = num_cols)
+
+    index = 0
+    # take the first 'num_rows * num_cols' samples from the provided batch
+    for axis in axes.flat:
+        image = axis.imshow(samples[index, :].reshape(image_side, image_side),
+                            cmap = plt.cm.gray, interpolation = 'nearest')
+        axis.set_frame_on(False)
+        axis.set_axis_off()
+        index += 1 
+
+    # save the figure
+    figure.savefig(file_name)
+
+"""
+Train data space network on the given dataset
+
+dataset: Either 'mnist' or 'lfw', indicating the dataset
+"""
+def trainDataSpaceNetwork(train_x, train_y):
+
+    # batch size for the training
+    batch_size = 1280
+
+    # parameters and training set for MNIST
+    # if dataset == 'mnist':
+    #     input_dim    = 784
+    #     image_side   = 28
+    #     num_examples = 50000
+    #     train_x      = loadMNIST()
+
+    # # parameters and training set for LFW
+    # elif dataset == 'lfw':
+    #     input_dim    = 1024
+    #     image_side   = 32
+    #     num_examples = 13000
+    #     train_x      = loadLFW()
+
+
+    num_examples = len(train_x)
+    input_dim = 300
+
+    # dimensions of the moment matching network
+    data_space_dims = [1280, 300, 256, 256, input_dim]
+
+    # get a DataSpaceNetwork object
+    data_space_network = DataSpaceNetwork(data_space_dims, batch_size)
+
+    # placeholders for the data batch and the uniform samples respectively
+    x       = tf.placeholder("float", [batch_size, input_dim])
+    # samples = tf.placeholder("float", [batch_size, data_space_dims[0]])
+    samples = tf.placeholder("float", [batch_size, input_dim])
+
+    # cost of the network, and optimizer for the cost
+    cost      = data_space_network.computeLoss(x, samples)
+    optimizer = tf.train.AdamOptimizer().minimize(cost)
+
+    # generator for the network
+    generate = data_space_network.forward(samples)
+
+    # initalize all the variables in the model
+    init = tf.initialize_all_variables()
+    sess = tf.Session()
+    sess.run(init)
+
+    # number of batches to train the model on, and frequency of printing out the
+    # cost
+    num_iterations  = 40001
+    iteration_break = 1000
+
+    last_time = time.time()
+
+    for i in range(num_iterations):
+
+        # sample a random batch from the training set
+        batch_indices = np.random.randint(num_examples, size = batch_size)
+        batch_x       = train_x[batch_indices]
+        # batch_uniform = np.random.uniform(low = -1.0, high = 1.0,
+        #     size = (batch_size, data_space_dims[0]))
+        batch_y = train_y[batch_indices]
+
+        # print out the cost after every 'iteration_break' iterations
+        if i % iteration_break == 0:
+            curr_time = time.time()
+            curr_cost = sess.run(cost, feed_dict = {samples: batch_y,
+                                                    x: batch_x})
+            print( 'Cost at iteration ' , str(i+1) , ': ' , str(curr_cost))
+            print( 'Time since last iteration break: ', curr_time - last_time)
+            last_time = time.time()
+
+        # optimize the network
+        sess.run(optimizer, feed_dict = {samples: batch_uniform, x: batch_x})
+
+    # parameters for figure generation
+    # num_rows = 10; num_cols = 10
+
+    # generate samples from the trained network
+    # batch_uniform = np.random.uniform(low = -1.0, high = 1.0,
+        # size = (batch_size, data_space_dims[0]))
+    # gen_samples   = sess.run(generate, feed_dict = {samples: batch_uniform})
+
+    # generate figure of generated samples
+    # file_name = dataset + '_data_space.png'
+    # generateFigure(gen_samples, num_rows, num_cols, image_side, file_name)
+
+# parser = argparse.ArgumentParser(description = 'Train GMMN')
+# parser.add_argument('-d', '--dataset', choices = ['mnist', 'lfw'])
+# args = parser.parse_args()
+
+# trainDataSpaceNetwork(args.dataset)
+
 
 def dropout(m, p):
     if p <= 0.0:
@@ -53,36 +349,44 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
 
 #This is the implementation of Gaussian kernel
 # The lambda values in Li's paper are [2,5,10,20,40,80]
-def kernel(x,y, l):
+def kernel(x, y, l = 2):
+    xp = get_cupy()
     coefficient = 1/(2* l*l)
     first_term = 1/math.pi * math.e 
-    second_term = x*x + y*y
+    # second_term = x*x + y*y
+    second_term = xp.matmul(x, x) + xp.matmul(y, y)
     final = coefficient * (first_term - second_term)
     return final
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
 def MMD(batch_size, W, X, Y):
+    xp = get_cupy()
     norm = 1/(batch_size* batch_size)
     first_term = 0
     second_term = 0
     third_term = 0
     for i in range(batch_size):
         for j in range(batch_size):
-            first_term  += kernel(W*X[i],W*X[j])
-            second_term += kernel(W*X[i],Y[j])
+            wxi = xp.matmul(W, X[i])
+            wxj = xp.matmul(W, X[j])
+            first_term += kernel(wxi, wxj)
+            second_term += kernel(wxi, Y[j])
+            # first_term  += kernel(W*X[i],W*X[j])
+            # second_term += kernel(W*X[i],Y[j])
             third_term += kernel(Y[i],Y[j])
+        if i%200 == 0:
+            print(i, " of ", batch_size)
     objective = norm*(first_term - 2* second_term + third_term)
     return objective
 
-def update_W(W,beta):
-    W = (1+ beta) * W - beta(W*W.transpose())* W
+def update_W(W, beta = 0.01):
+    W = (1+ beta) * W - beta*(W*W.transpose())* W
     return W
 
 
 #The refinement step to improve performance after training
 def refinement_step():
-
 
 
     return
@@ -294,6 +598,8 @@ def main():
     # Allocate memory
     xw = xp.empty_like(x)
     zw = xp.empty_like(z)
+    # wx = xp.empty_like(x)
+    # wz = xp.empty_like(z)
     src_size = x.shape[0] if args.vocabulary_cutoff <= 0 else min(x.shape[0], args.vocabulary_cutoff)
     trg_size = z.shape[0] if args.vocabulary_cutoff <= 0 else min(z.shape[0], args.vocabulary_cutoff)
     simfwd = xp.empty((args.batch_size, trg_size), dtype=dtype)
@@ -320,7 +626,12 @@ def main():
     keep_prob = args.stochastic_initial
     t = time.time()
     end = not args.self_learning
-    while True:
+
+    other = False
+    if not other:
+        trainDataSpaceNetwork(x, z)
+
+    while other:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
         if it - last_improvement > args.stochastic_interval:
@@ -330,104 +641,113 @@ def main():
             last_improvement = it
 
         # Update the embedding mapping
-        if args.orthogonal or not end:  # orthogonal mapping
+        # if args.orthogonal or not end:  # orthogonal mapping
+        if it == 1:
             u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
             w = vt.T.dot(u.T)
-            x.dot(w, out=xw)
-            zw[:] = z
-        elif args.unconstrained:  # unconstrained mapping
-            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-            w = x_pseudoinv.dot(z[trg_indices])
-            x.dot(w, out=xw)
-            zw[:] = z
-        else:  # advanced mapping
+            # x.dot(w, out=xw)
+            # zw[:] = z
+        # elif args.unconstrained:  # unconstrained mapping
+        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+        #     w = x_pseudoinv.dot(z[trg_indices])
+        #     x.dot(w, out=xw)
+        #     zw[:] = z
+        # else:  # advanced mapping
 
-            # TODO xw.dot(wx2, out=xw) and alike not working
-            xw[:] = x
-            zw[:] = z
+        #     # TODO xw.dot(wx2, out=xw) and alike not working
+        #     xw[:] = x
+        #     zw[:] = z
 
-            # STEP 1: Whitening
-            def whitening_transformation(m):
-                u, s, vt = xp.linalg.svd(m, full_matrices=False)
-                return vt.T.dot(xp.diag(1/s)).dot(vt)
-            # if args.whiten:
-            #     wx1 = whitening_transformation(xw[src_indices])
-            #     wz1 = whitening_transformation(zw[trg_indices])
-            #     xw = xw.dot(wx1)
-            #     zw = zw.dot(wz1)
+        #     # STEP 1: Whitening
+        #     def whitening_transformation(m):
+        #         u, s, vt = xp.linalg.svd(m, full_matrices=False)
+        #         return vt.T.dot(xp.diag(1/s)).dot(vt)
+        #     if args.whiten:
+        #         wx1 = whitening_transformation(xw[src_indices])
+        #         wz1 = whitening_transformation(zw[trg_indices])
+        #         xw = xw.dot(wx1)
+        #         zw = zw.dot(wz1)
 
-            # STEP 2: Orthogonal mapping
-            wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
-            wz2 = wz2_t.T
-            xw = xw.dot(wx2)
-            zw = zw.dot(wz2)
+        #     # STEP 2: Orthogonal mapping
+        #     wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
+        #     wz2 = wz2_t.T
+        #     xw = xw.dot(wx2)
+        #     zw = zw.dot(wz2)
 
-            # STEP 3: Re-weighting
-            xw *= s**args.src_reweight
-            zw *= s**args.trg_reweight
+        #     # STEP 3: Re-weighting
+        #     xw *= s**args.src_reweight
+        #     zw *= s**args.trg_reweight
 
-            # STEP 4: De-whitening
-            # if args.src_dewhiten == 'src':
-            #     xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            # elif args.src_dewhiten == 'trg':
-            #     xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-            # if args.trg_dewhiten == 'src':
-            #     zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            # elif args.trg_dewhiten == 'trg':
-            #     zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+        #     # STEP 4: De-whitening
+        #     if args.src_dewhiten == 'src':
+        #         xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+        #     elif args.src_dewhiten == 'trg':
+        #         xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+        #     if args.trg_dewhiten == 'src':
+        #         zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+        #     elif args.trg_dewhiten == 'trg':
+        #         zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
 
-            # STEP 5: Dimensionality reduction
-            if args.dim_reduction > 0:
-                xw = xw[:, :args.dim_reduction]
-                zw = zw[:, :args.dim_reduction]
+        #     # STEP 5: Dimensionality reduction
+        #     if args.dim_reduction > 0:
+        #         xw = xw[:, :args.dim_reduction]
+        #         zw = zw[:, :args.dim_reduction]
 
         # Self-learning
         if end:
             break
         else:
              #Need to Update here for Updating W
+
+
             # Update the training dictionary
-            if args.direction in ('forward', 'union'):
-                if args.csls_neighborhood > 0:
-                    for i in range(0, trg_size, simbwd.shape[0]):
-                        j = min(i + simbwd.shape[0], trg_size)
-                        zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-                        knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
-                for i in range(0, src_size, simfwd.shape[0]):
-                    j = min(i + simfwd.shape[0], src_size)
-                    xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-                    simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
-                    simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
-                    dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
-            if args.direction in ('backward', 'union'):
-                if args.csls_neighborhood > 0:
-                    for i in range(0, src_size, simfwd.shape[0]):
-                        j = min(i + simfwd.shape[0], src_size)
-                        xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-                        knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
-                for i in range(0, trg_size, simbwd.shape[0]):
-                    j = min(i + simbwd.shape[0], trg_size)
-                    zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-                    simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
-                    simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
-                    dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            if args.direction == 'forward':
-                src_indices = src_indices_forward
-                trg_indices = trg_indices_forward
-            elif args.direction == 'backward':
-                src_indices = src_indices_backward
-                trg_indices = trg_indices_backward
-            elif args.direction == 'union':
-                src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
-                trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
+            # if args.direction in ('forward', 'union'):
+            #     if args.csls_neighborhood > 0:
+            #         for i in range(0, trg_size, simbwd.shape[0]):
+            #             j = min(i + simbwd.shape[0], trg_size)
+            #             zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+            #             knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
+            #     for i in range(0, src_size, simfwd.shape[0]):
+            #         j = min(i + simfwd.shape[0], src_size)
+            #         xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+            #         simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
+            #         simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
+            #         dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
+            # if args.direction in ('backward', 'union'):
+            #     if args.csls_neighborhood > 0:
+            #         for i in range(0, src_size, simfwd.shape[0]):
+            #             j = min(i + simfwd.shape[0], src_size)
+            #             xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+            #             knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
+            #     for i in range(0, trg_size, simbwd.shape[0]):
+            #         j = min(i + simbwd.shape[0], trg_size)
+            #         zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+            #         simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
+            #         simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
+            #         dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
+            # if args.direction == 'forward':
+            #     src_indices = src_indices_forward
+            #     trg_indices = trg_indices_forward
+            # elif args.direction == 'backward':
+            #     src_indices = src_indices_backward
+            #     trg_indices = trg_indices_backward
+            # elif args.direction == 'union':
+            #     src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
+            #     trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
             # Objective function evaluation
-            if args.direction == 'forward':
-                objective = xp.mean(best_sim_forward).tolist()
-            elif args.direction == 'backward':
-                objective = xp.mean(best_sim_backward).tolist()
-            elif args.direction == 'union':
-                objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
+            # if args.direction == 'forward':
+            #     objective = xp.mean(best_sim_forward).tolist()
+            # elif args.direction == 'backward':
+            #     objective = xp.mean(best_sim_backward).tolist()
+            # elif args.direction == 'union':
+            #     objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
+
+            xp = get_cupy()
+            mask = numpy.random.choice([False, True], len(x), p=[0.99, 0.01])
+            batch_x = xp.asarray(x[mask])
+            batch_y = xp.asarray(zw[mask])
+            objective = MMD(len(batch_x), w, batch_x, batch_y)
             if objective - best_objective >= args.threshold:
                 last_improvement = it
                 best_objective = objective
@@ -440,6 +760,7 @@ def main():
                 accuracy = np.mean([1 if nn[i] in validation[src[i]] else 0 for i in range(len(src))])
                 similarity = np.mean([max([simval[i, j].tolist() for j in validation[src[i]]]) for i in range(len(src))])
 
+            update_W(w)
             # Logging
             duration = time.time() - t
             if args.verbose:
