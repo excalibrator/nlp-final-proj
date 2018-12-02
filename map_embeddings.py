@@ -43,6 +43,8 @@ import time
 import math
 from sklearn.decomposition import PCA
 
+import cupy as cp
+
 #os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
@@ -125,6 +127,9 @@ def compressing(x_train,original_dim,target_dim):
 
 
 #This is the implementation of Gaussian kernel
+# The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
+def kernel(x,y,lamda):
+    coefficient = 1/(2* lamda*lamda)
 # The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
 def kernel(x,y,lamda):
     coefficient = 1/(2* lamda*lamda)
@@ -258,11 +263,11 @@ def main():
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
 
-    x = compressing(x,len(x[0]),int(len(x[0])/2))
+    x = compressing(x,len(x[0]),int(len(x[0])/6))
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
 
 
-    z = compressing(z,len(z[0]),int(len(z[0])/2))
+    z = compressing(z,len(z[0]),int(len(z[0])/6))
     print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
@@ -444,6 +449,7 @@ def main():
             xw *= s**args.src_reweight
             zw *= s**args.trg_reweight
 
+          
             # STEP 4: De-whitening
             if args.src_dewhiten == 'src':
                 xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
@@ -458,7 +464,6 @@ def main():
             if args.dim_reduction > 0:
                 xw = xw[:, :args.dim_reduction]
                 zw = zw[:, :args.dim_reduction]
-
         # Self-learning
         if end:
             break
@@ -470,6 +475,12 @@ def main():
                 if args.csls_neighborhood > 0:
                     for i in range(0, trg_size, simbwd.shape[0]):
                         j = min(i + simbwd.shape[0], trg_size)
+                        #simbwd = cp.float64(simbwd)
+                        #print("Check data type zw:",zw.dtype)
+                        #print("Check data type xw:",xw.dtype)
+                        #print("Check data type simbwd: ",simbwd.dtype)
+                        #print("Check! zw: ",zw[i:j])
+                        #print("Check! xw : ",xw[:src_size])             
                         zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
                         knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
                 for i in range(0, src_size, simfwd.shape[0]):
