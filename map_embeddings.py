@@ -24,6 +24,10 @@ import sys
 import time
 import math
 
+import multiprocessing
+
+import tensorflow as tf
+
 
 def dropout(m, p):
     if p <= 0.0:
@@ -53,36 +57,68 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
 
 #This is the implementation of Gaussian kernel
 # The lambda values in Li's paper are [2,5,10,20,40,80]
-def kernel(x,y, l):
+def kernel(x, y, l = 2):
+    # xp = get_cupy()
     coefficient = 1/(2* l*l)
     first_term = 1/math.pi * math.e 
     second_term = x*x + y*y
+    # second_term = xp.matmul(x, x) + xp.matmul(y, y)
     final = coefficient * (first_term - second_term)
     return final
+
+def kermat(W, X, Y, i, first, second, third):
+    first_term = 0
+    second_term = 0
+    third_term = 0
+    for j in range(batch_size):
+        first_term += kernel(W*X[i], W*X[j])
+        second_term += kernel(W*X[i], Y[j])
+        third_term += kernel(Y[i],Y[j])
+    first[i] = first_term
+    second[i] = second_term
+    third[i] = third_term
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
 def MMD(batch_size, W, X, Y):
+    # xp = get_cupy()
     norm = 1/(batch_size* batch_size)
-    first_term = 0
-    second_term = 0
-    third_term = 0
+    first_term = np.zeros(batch_size)
+    second_term = np.zeros(batch_size)
+    third_term = np.zeros(batch_size)
+    # first_term = 0
+    # second_term = 0
+    # third_term = 0
+
+    p = multiprocessing.Pool(processes = multiprocessing.cpu_count()-1)
+    # for i in range(batch_size):
     for i in range(batch_size):
-        for j in range(batch_size):
-            first_term  += kernel(W*X[i],W*X[j])
-            second_term += kernel(W*X[i],Y[j])
-            third_term += kernel(Y[i],Y[j])
-    objective = norm*(first_term - 2* second_term + third_term)
+        p.apply_async(kermat, [W, X, Y, i, first_term, second_term, third_term])
+        # for j in range(batch_size):
+        #     wxi = xp.matmul(W, X[i])
+        #     wxj = xp.matmul(W, X[j])
+        #     first_term += kernel(wxi, wxj)
+        #     second_term += kernel(wxi, Y[j])
+        #     # first_term  += kernel(W*X[i],W*X[j])
+        #     # second_term += kernel(W*X[i],Y[j])
+        #     third_term += kernel(Y[i],Y[j])
+        if i%200 == 0:
+            print(i, " of ", batch_size)
+
+    first = np.sum(first_term)
+    second = np.sum(second_term)
+    third = np.sum(third_term)
+    # objective = norm*(first_term - 2* second_term + third_term)
+    objective = norm*(first - 2* second + third)
     return objective
 
-def update_W(W,beta):
-    W = (1+ beta) * W - beta(W*W.transpose())* W
+def update_W(W, beta = 0.01):
+    W = (1+ beta) * W - beta*(W*W.transpose())* W
     return W
 
 
 #The refinement step to improve performance after training
 def refinement_step():
-
 
 
     return
@@ -294,6 +330,8 @@ def main():
     # Allocate memory
     xw = xp.empty_like(x)
     zw = xp.empty_like(z)
+    # wx = xp.empty_like(x)
+    # wz = xp.empty_like(z)
     src_size = x.shape[0] if args.vocabulary_cutoff <= 0 else min(x.shape[0], args.vocabulary_cutoff)
     trg_size = z.shape[0] if args.vocabulary_cutoff <= 0 else min(z.shape[0], args.vocabulary_cutoff)
     simfwd = xp.empty((args.batch_size, trg_size), dtype=dtype)
@@ -320,7 +358,12 @@ def main():
     keep_prob = args.stochastic_initial
     t = time.time()
     end = not args.self_learning
-    while True:
+
+    other = True
+    if not other:
+        trainDataSpaceNetwork(x, z)
+
+    while other:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
         if it - last_improvement > args.stochastic_interval:
@@ -330,104 +373,113 @@ def main():
             last_improvement = it
 
         # Update the embedding mapping
-        if args.orthogonal or not end:  # orthogonal mapping
+        # if args.orthogonal or not end:  # orthogonal mapping
+        if it == 1:
             u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
             w = vt.T.dot(u.T)
-            x.dot(w, out=xw)
-            zw[:] = z
-        elif args.unconstrained:  # unconstrained mapping
-            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-            w = x_pseudoinv.dot(z[trg_indices])
-            x.dot(w, out=xw)
-            zw[:] = z
-        else:  # advanced mapping
+            # x.dot(w, out=xw)
+            # zw[:] = z
+        # elif args.unconstrained:  # unconstrained mapping
+        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+        #     w = x_pseudoinv.dot(z[trg_indices])
+        #     x.dot(w, out=xw)
+        #     zw[:] = z
+        # else:  # advanced mapping
 
-            # TODO xw.dot(wx2, out=xw) and alike not working
-            xw[:] = x
-            zw[:] = z
+        #     # TODO xw.dot(wx2, out=xw) and alike not working
+        #     xw[:] = x
+        #     zw[:] = z
 
-            # STEP 1: Whitening
-            def whitening_transformation(m):
-                u, s, vt = xp.linalg.svd(m, full_matrices=False)
-                return vt.T.dot(xp.diag(1/s)).dot(vt)
-            # if args.whiten:
-            #     wx1 = whitening_transformation(xw[src_indices])
-            #     wz1 = whitening_transformation(zw[trg_indices])
-            #     xw = xw.dot(wx1)
-            #     zw = zw.dot(wz1)
+        #     # STEP 1: Whitening
+        #     def whitening_transformation(m):
+        #         u, s, vt = xp.linalg.svd(m, full_matrices=False)
+        #         return vt.T.dot(xp.diag(1/s)).dot(vt)
+        #     if args.whiten:
+        #         wx1 = whitening_transformation(xw[src_indices])
+        #         wz1 = whitening_transformation(zw[trg_indices])
+        #         xw = xw.dot(wx1)
+        #         zw = zw.dot(wz1)
 
-            # STEP 2: Orthogonal mapping
-            wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
-            wz2 = wz2_t.T
-            xw = xw.dot(wx2)
-            zw = zw.dot(wz2)
+        #     # STEP 2: Orthogonal mapping
+        #     wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
+        #     wz2 = wz2_t.T
+        #     xw = xw.dot(wx2)
+        #     zw = zw.dot(wz2)
 
-            # STEP 3: Re-weighting
-            xw *= s**args.src_reweight
-            zw *= s**args.trg_reweight
+        #     # STEP 3: Re-weighting
+        #     xw *= s**args.src_reweight
+        #     zw *= s**args.trg_reweight
 
-            # STEP 4: De-whitening
-            # if args.src_dewhiten == 'src':
-            #     xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            # elif args.src_dewhiten == 'trg':
-            #     xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-            # if args.trg_dewhiten == 'src':
-            #     zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-            # elif args.trg_dewhiten == 'trg':
-            #     zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+        #     # STEP 4: De-whitening
+        #     if args.src_dewhiten == 'src':
+        #         xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+        #     elif args.src_dewhiten == 'trg':
+        #         xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+        #     if args.trg_dewhiten == 'src':
+        #         zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+        #     elif args.trg_dewhiten == 'trg':
+        #         zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
 
-            # STEP 5: Dimensionality reduction
-            if args.dim_reduction > 0:
-                xw = xw[:, :args.dim_reduction]
-                zw = zw[:, :args.dim_reduction]
+        #     # STEP 5: Dimensionality reduction
+        #     if args.dim_reduction > 0:
+        #         xw = xw[:, :args.dim_reduction]
+        #         zw = zw[:, :args.dim_reduction]
 
         # Self-learning
         if end:
             break
         else:
              #Need to Update here for Updating W
+
+
             # Update the training dictionary
-            if args.direction in ('forward', 'union'):
-                if args.csls_neighborhood > 0:
-                    for i in range(0, trg_size, simbwd.shape[0]):
-                        j = min(i + simbwd.shape[0], trg_size)
-                        zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-                        knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
-                for i in range(0, src_size, simfwd.shape[0]):
-                    j = min(i + simfwd.shape[0], src_size)
-                    xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-                    simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
-                    simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
-                    dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
-            if args.direction in ('backward', 'union'):
-                if args.csls_neighborhood > 0:
-                    for i in range(0, src_size, simfwd.shape[0]):
-                        j = min(i + simfwd.shape[0], src_size)
-                        xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-                        knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
-                for i in range(0, trg_size, simbwd.shape[0]):
-                    j = min(i + simbwd.shape[0], trg_size)
-                    zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-                    simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
-                    simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
-                    dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            if args.direction == 'forward':
-                src_indices = src_indices_forward
-                trg_indices = trg_indices_forward
-            elif args.direction == 'backward':
-                src_indices = src_indices_backward
-                trg_indices = trg_indices_backward
-            elif args.direction == 'union':
-                src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
-                trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
+            # if args.direction in ('forward', 'union'):
+            #     if args.csls_neighborhood > 0:
+            #         for i in range(0, trg_size, simbwd.shape[0]):
+            #             j = min(i + simbwd.shape[0], trg_size)
+            #             zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+            #             knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
+            #     for i in range(0, src_size, simfwd.shape[0]):
+            #         j = min(i + simfwd.shape[0], src_size)
+            #         xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+            #         simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
+            #         simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
+            #         dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
+            # if args.direction in ('backward', 'union'):
+            #     if args.csls_neighborhood > 0:
+            #         for i in range(0, src_size, simfwd.shape[0]):
+            #             j = min(i + simfwd.shape[0], src_size)
+            #             xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+            #             knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
+            #     for i in range(0, trg_size, simbwd.shape[0]):
+            #         j = min(i + simbwd.shape[0], trg_size)
+            #         zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+            #         simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
+            #         simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
+            #         dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
+            # if args.direction == 'forward':
+            #     src_indices = src_indices_forward
+            #     trg_indices = trg_indices_forward
+            # elif args.direction == 'backward':
+            #     src_indices = src_indices_backward
+            #     trg_indices = trg_indices_backward
+            # elif args.direction == 'union':
+            #     src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
+            #     trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
             # Objective function evaluation
-            if args.direction == 'forward':
-                objective = xp.mean(best_sim_forward).tolist()
-            elif args.direction == 'backward':
-                objective = xp.mean(best_sim_backward).tolist()
-            elif args.direction == 'union':
-                objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
+            # if args.direction == 'forward':
+            #     objective = xp.mean(best_sim_forward).tolist()
+            # elif args.direction == 'backward':
+            #     objective = xp.mean(best_sim_backward).tolist()
+            # elif args.direction == 'union':
+            #     objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
+
+            xp = get_cupy()
+            mask = numpy.random.choice([False, True], len(x), p=[0.99, 0.01])
+            batch_x = xp.asarray(x[mask])
+            batch_y = xp.asarray(zw[mask])
+            objective = MMD(len(batch_x), w, batch_x, batch_y)
             if objective - best_objective >= args.threshold:
                 last_improvement = it
                 best_objective = objective
@@ -440,6 +492,7 @@ def main():
                 accuracy = np.mean([1 if nn[i] in validation[src[i]] else 0 for i in range(len(src))])
                 similarity = np.mean([max([simval[i, j].tolist() for j in validation[src[i]]]) for i in range(len(src))])
 
+            update_W(w)
             # Logging
             duration = time.time() - t
             if args.verbose:
