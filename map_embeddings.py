@@ -124,37 +124,33 @@ def compressing(x_train,original_dim,target_dim):
             
 
 
-
-
-#This is the implementation of Gaussian kernel
-# The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
-def kernel(x,y,lamda):
-    coefficient = 1/(2* lamda*lamda)
-# The lamda value can used the values from Li's paper, which are [2,5,10,20,40,80]
-def kernel(x,y,lamda):
-    coefficient = 1/(2* lamda*lamda)
-    first_term = 1/math.pi * math.e 
-    second_term = x*x + y*y
-    final = coefficient * (first_term - second_term)
+def kernel(X,Y,lamda):
+    coefficient = 1/(2* lamda*lamda * math.pi)
+    power = -(np.matmul(X,X) + np.matmul(Y,Y))/(2 * lamda* lamda)
+    #print("Check pow:",  power)
+    final = coefficient * (math.e)**power
     return final
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
-def MMD(batch_size,W,X,Y):
+def MMD(batch_size,W,X,Y,lamda):
     norm = 1/(batch_size* batch_size)
     first_term = 0
     second_term = 0
     third_term = 0
     for i in range(batch_size):
         for j in range(batch_size):
-            first_term  += kernel(W*X[i],W*X[j])
-            second_term += kernel(W*X[i],Y[j])
-            third_term += kernel(Y[i],Y[j])
+            first_term  += kernel(np.matmul(W,X[i]),np.matmul(W,X[j]),lamda)
+            #print("first_term: ",first_term)
+            second_term += kernel(np.matmul(W,X[i]),Y[j],lamda)
+            #print("second term: ",second_term)
+            third_term += kernel(Y[i],Y[j],lamda)
+            #print("third term: ",third_term)
     objective = norm*(first_term - 2* second_term + third_term)
     return objective
 
 def update_W(W,beta):
-    W = (1+ beta) * W - beta(W*W.transpose())* W
+    W = (1+ beta) * W - beta(np.matmul(np.matmul(W,W.transpose()), W))
     return W
 
 
