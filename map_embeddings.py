@@ -373,107 +373,24 @@ def main():
         # Update the embedding mapping
         # if args.orthogonal or not end:  # orthogonal mapping
         if it == 1:
-            u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
-            w = vt.T.dot(u.T)
-            # x.dot(w, out=xw)
-            # zw[:] = z
-        # elif args.unconstrained:  # unconstrained mapping
-        #     x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
-        #     w = x_pseudoinv.dot(z[trg_indices])
-        #     x.dot(w, out=xw)
-        #     zw[:] = z
-        # else:  # advanced mapping
-
-        #     # TODO xw.dot(wx2, out=xw) and alike not working
-        #     xw[:] = x
-        #     zw[:] = z
-
-        #     # STEP 1: Whitening
-        #     def whitening_transformation(m):
-        #         u, s, vt = xp.linalg.svd(m, full_matrices=False)
-        #         return vt.T.dot(xp.diag(1/s)).dot(vt)
-        #     if args.whiten:
-        #         wx1 = whitening_transformation(xw[src_indices])
-        #         wz1 = whitening_transformation(zw[trg_indices])
-        #         xw = xw.dot(wx1)
-        #         zw = zw.dot(wz1)
-
-        #     # STEP 2: Orthogonal mapping
-        #     wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
-        #     wz2 = wz2_t.T
-        #     xw = xw.dot(wx2)
-        #     zw = zw.dot(wz2)
-
-        #     # STEP 3: Re-weighting
-        #     xw *= s**args.src_reweight
-        #     zw *= s**args.trg_reweight
-
-        #     # STEP 4: De-whitening
-        #     if args.src_dewhiten == 'src':
-        #         xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-        #     elif args.src_dewhiten == 'trg':
-        #         xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-        #     if args.trg_dewhiten == 'src':
-        #         zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
-        #     elif args.trg_dewhiten == 'trg':
-        #         zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
-
-        #     # STEP 5: Dimensionality reduction
-        #     if args.dim_reduction > 0:
-        #         xw = xw[:, :args.dim_reduction]
-        #         zw = zw[:, :args.dim_reduction]
+            w = xp.ones((len(x),len(x)), dtype)
+            # u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
+            # w = vt.T.dot(u.T)
+        if not end:
+            # u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
+            # w = vt.T.dot(u.T)
+            x.dot(w, out=xw)
+            zw[:] = z
 
         # Self-learning
         if end:
             break
         else:
              #Need to Update here for Updating W
+            w = update_W(w)
+            print(w)
+            # print(x)
 
-
-            # Update the training dictionary
-            # if args.direction in ('forward', 'union'):
-            #     if args.csls_neighborhood > 0:
-            #         for i in range(0, trg_size, simbwd.shape[0]):
-            #             j = min(i + simbwd.shape[0], trg_size)
-            #             zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-            #             knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
-            #     for i in range(0, src_size, simfwd.shape[0]):
-            #         j = min(i + simfwd.shape[0], src_size)
-            #         xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-            #         simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
-            #         simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
-            #         dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
-            # if args.direction in ('backward', 'union'):
-            #     if args.csls_neighborhood > 0:
-            #         for i in range(0, src_size, simfwd.shape[0]):
-            #             j = min(i + simfwd.shape[0], src_size)
-            #             xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
-            #             knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
-            #     for i in range(0, trg_size, simbwd.shape[0]):
-            #         j = min(i + simbwd.shape[0], trg_size)
-            #         zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
-            #         simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
-            #         simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
-            #         dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
-            # if args.direction == 'forward':
-            #     src_indices = src_indices_forward
-            #     trg_indices = trg_indices_forward
-            # elif args.direction == 'backward':
-            #     src_indices = src_indices_backward
-            #     trg_indices = trg_indices_backward
-            # elif args.direction == 'union':
-            #     src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
-            #     trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
-
-            # Objective function evaluation
-            # if args.direction == 'forward':
-            #     objective = xp.mean(best_sim_forward).tolist()
-            # elif args.direction == 'backward':
-            #     objective = xp.mean(best_sim_backward).tolist()
-            # elif args.direction == 'union':
-            #     objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
-
-            xp = get_cupy()
             mask = numpy.random.choice([False, True], len(x), p=[0.99, 0.01])
             batch_x = xp.asarray(x[mask])
             batch_y = xp.asarray(zw[mask])
@@ -490,7 +407,6 @@ def main():
                 accuracy = np.mean([1 if nn[i] in validation[src[i]] else 0 for i in range(len(src))])
                 similarity = np.mean([max([simval[i, j].tolist() for j in validation[src[i]]]) for i in range(len(src))])
 
-            update_W(w)
             # Logging
             duration = time.time() - t
             if args.verbose:
