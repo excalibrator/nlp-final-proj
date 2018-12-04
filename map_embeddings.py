@@ -57,63 +57,61 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
 
 #This is the implementation of Gaussian kernel
 # The lambda values in Li's paper are [2,5,10,20,40,80]
-def kernel(x, y, l = 2):
-    # xp = get_cupy()
-    coefficient = 1/(2* l*l)
-    first_term = 1/math.pi * math.e 
-    second_term = x*x + y*y
-    # second_term = xp.matmul(x, x) + xp.matmul(y, y)
-    final = coefficient * (first_term - second_term)
+# def kernel(x, y, l = 2):
+#     # xp = get_cupy()
+#     coefficient = 1/(2* l*l)
+#     first_term = 1/math.pi * math.e 
+#     second_term = x*x + y*y
+#     # second_term = xp.matmul(x, x) + xp.matmul(y, y)
+#     final = coefficient * (first_term - second_term)
+#     return final
+def kernel(X,Y,lamda=2):
+    coefficient = 1/(2* lamda*lamda * math.pi)
+    power = -(np.matmul(X,X) + np.matmul(Y,Y))/(2 * lamda* lamda)
+    final = coefficient * (math.e)**power
     return final
 
-def kermat(W, X, Y, i, first, second, third):
+def kermat(W, X, Y, i, batch_size):
+    # xp = get_cupy()
     first_term = 0
     second_term = 0
     third_term = 0
+    wxi = np.matmul(W,X[i])
     for j in range(batch_size):
-        first_term += kernel(W*X[i], W*X[j])
-        second_term += kernel(W*X[i], Y[j])
+        wxj = np.matmul(W, X[j])
+        first_term += kernel(wxi, wxj)
+        second_term += kernel(wxi, Y[j])
         third_term += kernel(Y[i],Y[j])
-    first[i] = first_term
-    second[i] = second_term
-    third[i] = third_term
+    return first_term, second_term, third_term
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
 def MMD(batch_size, W, X, Y):
-    # xp = get_cupy()
+    xp = get_cupy()
     norm = 1/(batch_size* batch_size)
-    first_term = np.zeros(batch_size)
-    second_term = np.zeros(batch_size)
-    third_term = np.zeros(batch_size)
-    # first_term = 0
-    # second_term = 0
-    # third_term = 0
 
+    # print("got here")
     p = multiprocessing.Pool(processes = multiprocessing.cpu_count()-1)
-    # for i in range(batch_size):
-    for i in range(batch_size):
-        p.apply_async(kermat, [W, X, Y, i, first_term, second_term, third_term])
-        # for j in range(batch_size):
-        #     wxi = xp.matmul(W, X[i])
-        #     wxj = xp.matmul(W, X[j])
-        #     first_term += kernel(wxi, wxj)
-        #     second_term += kernel(wxi, Y[j])
-        #     # first_term  += kernel(W*X[i],W*X[j])
-        #     # second_term += kernel(W*X[i],Y[j])
-        #     third_term += kernel(Y[i],Y[j])
-        if i%200 == 0:
-            print(i, " of ", batch_size)
-
-    first = np.sum(first_term)
-    second = np.sum(second_term)
-    third = np.sum(third_term)
-    # objective = norm*(first_term - 2* second_term + third_term)
+    # print("got past pool")
+    results = [p.apply_async(kermat, args=(xp.asnumpy(W), xp.asnumpy(X), xp.asnumpy(Y), i, batch_size,)) for i in range(batch_size)]
+    p.close()
+    p.join()
+    # print("got to results")
+    first = 0
+    second = 0
+    third = 0
+    for p in results:
+        f, s, t = p.get()
+        first += f
+        second += s 
+        third += t
+    # print("calculated MMD")
     objective = norm*(first - 2* second + third)
     return objective
 
 def update_W(W, beta = 0.01):
-    W = (1+ beta) * W - beta*(W*W.transpose())* W
+    xp = get_cupy()
+    W = (1+ beta) * W - beta * (xp.matmul(xp.matmul(W,W.transpose()), W))
     return W
 
 
