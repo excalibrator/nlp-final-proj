@@ -24,9 +24,14 @@ import sys
 import time
 import math
 
-import multiprocessing
+import sklearn.metrics.pairwise
 
-import tensorflow as tf
+import multiprocessing
+import random
+
+import torch
+from torch.autograd import Variable
+from torch.nn import functional as F
 
 
 def dropout(m, p):
@@ -71,7 +76,7 @@ def kernel(X,Y,lamda=2):
     final = coefficient * (math.e)**power
     return final
 
-def kermat(W, X, Y, i, batch_size):
+def kermat(W, X, Y, i, batch_size, l):
     # xp = get_cupy()
     first_term = 0
     second_term = 0
@@ -79,21 +84,22 @@ def kermat(W, X, Y, i, batch_size):
     wxi = np.matmul(W,X[i])
     for j in range(batch_size):
         wxj = np.matmul(W, X[j])
-        first_term += kernel(wxi, wxj)
-        second_term += kernel(wxi, Y[j])
-        third_term += kernel(Y[i],Y[j])
+        first_term += kernel(wxi, wxj, l)
+        second_term += kernel(wxi, Y[j], l)
+        third_term += kernel(Y[i],Y[j], l)
     return first_term, second_term, third_term
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
 def MMD(batch_size, W, X, Y):
     xp = get_cupy()
-    norm = 1/(batch_size* batch_size)
-
+    norm = 1/(batch_size * batch_size)
     # print("got here")
     p = multiprocessing.Pool(processes = multiprocessing.cpu_count()-1)
     # print("got past pool")
-    results = [p.apply_async(kermat, args=(xp.asnumpy(W), xp.asnumpy(X), xp.asnumpy(Y), i, batch_size,)) for i in range(batch_size)]
+    l = [2, 5, 10, 20, 40, 80]
+    lam = random.choice(l)
+    results = [p.apply_async(kermat, args=(xp.asnumpy(W), xp.asnumpy(X), xp.asnumpy(Y), i, batch_size, lam, )) for i in range(batch_size)]
     p.close()
     p.join()
     # print("got to results")
@@ -109,11 +115,10 @@ def MMD(batch_size, W, X, Y):
     objective = norm*(first - 2* second + third)
     return objective
 
-def update_W(W, beta = 0.01):
+def orthogonalize(W, beta = 0.01):
     xp = get_cupy()
-    W = (1+ beta) * W - beta * (xp.matmul(xp.matmul(W,W.transpose()), W))
+    W = (1 + beta) * W - xp.matmul((beta * xp.matmul(W,W.transpose())), W)
     return W
-
 
 #The refinement step to improve performance after training
 def refinement_step():
@@ -272,30 +277,30 @@ def main():
             src_indices = xp.concatenate((xp.arange(sim_size), sim.argmax(axis=0)))
             trg_indices = xp.concatenate((sim.argmax(axis=1), xp.arange(sim_size)))
         del xsim, zsim, sim
-    elif args.init_numerals:
-        numeral_regex = re.compile('^[0-9]+$')
-        src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
-        trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
-        numerals = src_numerals.intersection(trg_numerals)
-        for word in numerals:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    elif args.init_identical:
-        identical = set(src_words).intersection(set(trg_words))
-        for word in identical:
-            src_indices.append(src_word2ind[word])
-            trg_indices.append(trg_word2ind[word])
-    else:
-        f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
-        for line in f:
-            src, trg = line.split()
-            try:
-                src_ind = src_word2ind[src]
-                trg_ind = trg_word2ind[trg]
-                src_indices.append(src_ind)
-                trg_indices.append(trg_ind)
-            except KeyError:
-                print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
+    # elif args.init_numerals:
+    #     numeral_regex = re.compile('^[0-9]+$')
+    #     src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
+    #     trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
+    #     numerals = src_numerals.intersection(trg_numerals)
+    #     for word in numerals:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # elif args.init_identical:
+    #     identical = set(src_words).intersection(set(trg_words))
+    #     for word in identical:
+    #         src_indices.append(src_word2ind[word])
+    #         trg_indices.append(trg_word2ind[word])
+    # else:
+    #     f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
+    #     for line in f:
+    #         src, trg = line.split()
+    #         try:
+    #             src_ind = src_word2ind[src]
+    #             trg_ind = trg_word2ind[trg]
+    #             src_indices.append(src_ind)
+    #             trg_indices.append(trg_ind)
+    #         except KeyError:
+    #             print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
 
     print("seed dictionary built")
 
@@ -357,11 +362,14 @@ def main():
     t = time.time()
     end = not args.self_learning
 
-    other = True
-    if not other:
-        trainDataSpaceNetwork(x, z)
+    optimizer = torch.optim.Adam(w, lr=0.0003)
 
-    while other:
+    # other = True
+    # if not other:
+    #     trainDataSpaceNetwork(x, z)
+
+    # end = True
+    while not end:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
         if it - last_improvement > args.stochastic_interval:
@@ -373,9 +381,8 @@ def main():
         # Update the embedding mapping
         # if args.orthogonal or not end:  # orthogonal mapping
         if it == 1:
-            w = xp.ones((len(x),len(x)), dtype)
-            # u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
-            # w = vt.T.dot(u.T)
+            u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
+            w = vt.T.dot(u.T)
         if not end:
             # u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
             # w = vt.T.dot(u.T)
@@ -387,14 +394,14 @@ def main():
             break
         else:
              #Need to Update here for Updating W
-            w = update_W(w)
-            print(w)
-            # print(x)
 
             mask = numpy.random.choice([False, True], len(x), p=[0.99, 0.01])
-            batch_x = xp.asarray(x[mask])
+            batch_x = xp.asarray(xw[mask])
             batch_y = xp.asarray(zw[mask])
             objective = MMD(len(batch_x), w, batch_x, batch_y)
+
+            optimizer.step()
+            w = orthogonalize(w)
             if objective - best_objective >= args.threshold:
                 last_improvement = it
                 best_objective = objective
@@ -412,7 +419,8 @@ def main():
             if args.verbose:
                 print(file=sys.stderr)
                 print('ITERATION {0} ({1:.2f}s)'.format(it, duration), file=sys.stderr)
-                print('\t- Objective:        {0:9.4f}%'.format(100 * objective), file=sys.stderr)
+                # print('\t- Objective:        {0:9.4f}%'.format(100 * objective), file=sys.stderr)
+                print("\t- Objective:   ", objective)
                 print('\t- Drop probability: {0:9.4f}%'.format(100 - 100*keep_prob), file=sys.stderr)
                 if args.validation is not None:
                     print('\t- Val. similarity:  {0:9.4f}%'.format(100 * similarity), file=sys.stderr)
@@ -424,9 +432,16 @@ def main():
                     100 * similarity, 100 * accuracy, 100 * validation_coverage) if args.validation is not None else ''
                 print('{0}\t{1:.6f}\t{2}\t{3:.6f}'.format(it, 100 * objective, val, duration), file=log)
                 log.flush()
+            if it == 10:
+                end = True
 
         t = time.time()
         it += 1
+
+    print(xw.shape)
+    print(z.shape)
+    print(sklearn.metrics.pairwise.cosine_similarity(xp.asnumpy(xw), xp.asnumpy(z)))
+    exit()
 
     print("finished training")
 
@@ -435,6 +450,7 @@ def main():
     srcfile = open(args.src_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     embeddings.write(src_words, xw, srcfile)
+    # embeddings.write(trg_words, zw, trgfile)
     embeddings.write(trg_words, zw, trgfile)
     srcfile.close()
     trgfile.close()
