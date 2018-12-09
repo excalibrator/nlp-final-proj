@@ -22,16 +22,30 @@ import numpy as np
 import re
 import sys
 import time
-import math
 
-import sklearn.metrics.pairwise
+# import os
+# import tensorflow as tf
+# from tensorflow import keras
+# from tensorflow.python.keras.models import Sequential
+# from tensorflow.python.keras.layers.core import Dense, Dropout, Activation
+# from tensorflow.python.keras.optimizers import SGD
 
-import multiprocessing
+
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+# import torch.optim as optim
+
+import argparse
 import random
+import numpy as np
+import time
+import math
+from sklearn.decomposition import PCA
 
-import torch
-from torch.autograd import Variable
-from torch.nn import functional as F
+import cupy as cp
+import multiprocessing
+#os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3' 
 
 
 def dropout(m, p):
@@ -60,49 +74,112 @@ def topk_mean(m, k, inplace=False):  # TODO Assuming that axis is 1
         m[ind0, ind1] = minimum
     return ans / k
 
-#This is the implementation of Gaussian kernel
-# The lambda values in Li's paper are [2,5,10,20,40,80]
-# def kernel(x, y, l = 2):
-#     # xp = get_cupy()
-#     coefficient = 1/(2* l*l)
-#     first_term = 1/math.pi * math.e 
-#     second_term = x*x + y*y
-#     # second_term = xp.matmul(x, x) + xp.matmul(y, y)
-#     final = coefficient * (first_term - second_term)
-#     return final
-def kernel(X,Y,lamda=2):
-    coefficient = 1/(2* lamda*lamda * math.pi)
-    power = -(np.matmul(X,X) + np.matmul(Y,Y))/(2 * lamda* lamda)
-    final = coefficient * (math.e)**power
+
+##Word embedding Dimension Reduction
+def compressing(x_train,original_dim,target_dim):
+
+    X_train = np.asarray(x_train)
+    pca_embeddings = {}
+
+    # PCA to get Top Components
+    pca =  PCA(n_components = original_dim)
+    X_train = X_train - np.mean(X_train)
+    #print("Working: ",X_train.dtype)
+    X_fit = pca.fit_transform(X_train)
+    U1 = pca.components_
+
+    z = []
+
+    # Removing Projections on Top Components
+    for i in range(len(X_train)):
+        x = X_train[i]
+        for u in U1[0:7]:        
+            x = x - np.dot(u.transpose(),x) * u 
+        z.append(x)
+
+    z = np.asarray(z)
+    #print("Z: ",z.dtype)
+    # PCA Dim Reduction
+    pca =  PCA(n_components = target_dim)
+    X_train = z - np.mean(z)
+    #print("Not Working: ",X_train.dtype)
+    X_new_final = pca.fit_transform(X_train)
+
+
+    # PCA to do Post-Processing Again
+    pca =  PCA(n_components = target_dim)
+    X_new = X_new_final - np.mean(X_new_final)
+    X_new = pca.fit_transform(X_new)
+    Ufit = pca.components_
+
+    X_new_final = X_new_final - np.mean(X_new_final)
+
+    final_pca_embeddings = []
+
+    for i in range(len(X_new_final)):
+        final_pca_embeddings.append(X_new_final[i])
+        for u in Ufit[0:7]:
+            final_pca_embeddings[i] = final_pca_embeddings[i] - np.dot(u.transpose(),final_pca_embeddings[i]) * u 
+    return np.asarray(final_pca_embeddings)
+            
+
+
+
+def Adam(g_t,w,t):
+    alpha = 0.01
+    beta_1 = 0.9
+    beta_2 = 0.999                      
+    epsilon = 1e-8
+    m_t = 0 
+    v_t = 0 
+    m_t = beta_1*m_t + (1-beta_1)*g_t   #updates the moving averages of the gradient
+    v_t = beta_2*v_t + (1-beta_2)*(g_t*g_t) #updates the moving averages of the squared gradient
+    m_cap = m_t/(1-(beta_1**t))     #calculates the bias-corrected estimates
+    v_cap = v_t/(1-(beta_2**t))     #calculates the bias-corrected estimates                            
+    w = w - (alpha*m_cap)/(math.sqrt(v_cap)+epsilon) #updates the parameters
+    return w   
+def kernel(X,Y,sigma_list):
+    final = 0
+    for sigma in sigma_list: 
+        coefficient = 1/(2* sigma * sigma *  math.pi)
+        power = -(np.matmul(X,X) + np.matmul(Y,Y))/(2 * sigma* sigma)
+        #print("Check pow:",  power)
+        final += coefficient * (math.e)**power
+    #print("Kernel: ",final)
     return final
 
-def kermat(W, X, Y, i, batch_size, l):
-    # xp = get_cupy()
+
+def kermat(W, X, Y, i, batch_size):
     first_term = 0
     second_term = 0
     third_term = 0
-    wxi = np.matmul(W,X[i])
+    #print("reach here: ")
+    #print(np.matmul(W,X[i]))
+    sigma = [1]
     for j in range(batch_size):
-        wxj = np.matmul(W, X[j])
-        first_term += kernel(wxi, wxj, l)
-        second_term += kernel(wxi, Y[j], l)
-        third_term += kernel(Y[i],Y[j], l)
-    return first_term, second_term, third_term
+        print(X)
+        np.matmul(W,X[:,i])
+        first_term  += kernel(np.matmul(W,X[:,i]),np.matmul(W,X[:,j]),sigma)
+        second_term += kernel(np.matmul(W,X[:,i]),Y[:,j],sigma)
+        third_term += kernel(Y[:,i],Y[:,j],sigma)
+    #print(first_term)
+    return first_term,second_term,third_term
 
 #The MMD part that will be used as objective(loss) during training
 #Assume both W,X,Y are numpy array
-def MMD(batch_size, W, X, Y):
-    xp = get_cupy()
-    norm = 1/(batch_size * batch_size)
-    # print("got here")
+def compute_MMD(batch_size,W,X,Y):
+    norm = 1/(batch_size* batch_size)
+    first_term = np.zeros(batch_size)
+    second_term = np.zeros(batch_size)
+    third_term = np.zeros(batch_size)
+
     p = multiprocessing.Pool(processes = multiprocessing.cpu_count()-1)
-    # print("got past pool")
-    l = [2, 5, 10, 20, 40, 80]
-    lam = random.choice(l)
-    results = [p.apply_async(kermat, args=(xp.asnumpy(W), xp.asnumpy(X), xp.asnumpy(Y), i, batch_size, lam, )) for i in range(batch_size)]
+    #for i in range(batch_size):
+        #kermat(W,X,Y,i,first_term,second_term,third_term,batch_size)
+    results = [p.apply_async(kermat, args=(W, X, Y, i,batch_size)) for i in range(batch_size)]
     p.close()
     p.join()
-    # print("got to results")
+
     first = 0
     second = 0
     third = 0
@@ -111,21 +188,82 @@ def MMD(batch_size, W, X, Y):
         first += f
         second += s 
         third += t
-    # print("calculated MMD")
+    # first = np.sum(first_term)
+    # second = np.sum(second_term)
+    # third = np.sum(third_term)
+    #print("First :",first)
+    #print("Second: ",second)
+    #print("Third: ",third)
     objective = norm*(first - 2* second + third)
     return objective
 
-def orthogonalize(W, beta = 0.01):
-    xp = get_cupy()
-    W = (1 + beta) * W - xp.matmul((beta * xp.matmul(W,W.transpose())), W)
+def kernel_grad(X,Y,sigma_list):
+    final = 0
+    for sigma in sigma_list: 
+        coefficient = 1/(2* sigma * sigma *  math.pi)*(-X/(sigma*sigma))
+        power = -(np.matmul(X,X) + np.matmul(Y,Y))/(2 * sigma* sigma)
+        #print("Check pow:",  power)
+        final += coefficient * (math.e)**power
+    return final
+
+def kermat_grad(W, X, Y, i,grad_w):
+    first_term = 0
+    second_term = 0
+    sigma = [1,5,10,40,80]
+    for j in range(batch_size):
+        first_term  = kernel_grad(np.matmul(W,X[:,i]),np.matmul(W,X[:,j]),sigma,grad_w)
+        second_term = kernel_grad(np.matmul(W,X[:,i]),Y[:,j],sigma,grad_w)
+        grad_w[i,j] = first_term + second_term
+
+def grad_MMD(batch_size,W,X,Y):
+    norm = 1/(batch_size* batch_size)
+    grad_w = np.zeros((batch_size,batch_size))
+    p = multiprocessing.Pool(processes = multiprocessing.cpu_count()-1)
+    for i in range(batch_size):
+        p.apply_async(kermat_grad, [W, X, Y, i,grad_w])
+        print(i, " of ", batch_size)
+    p.close()
+    p.join()
+    return grad_w
+
+
+
+    objective = norm*(first - 2* second)
+    return objective
+#Need to implement derivative of MMD respect to WX
+def compute_grad_w(MMD,W,X,Y,batch_size):
+    grad_w = np.zeros((batch_size,batch_size))
+    temp_grad = grad_MMD(batch_size,W,X,Y)
+    col_sum = np.zeros(batch_size)
+    for i in range(batch_size):
+        for j in range(batch_size):
+            col_sum[i] += abs(X[j,i])
+    for i in range(batch_size):
+        for j in range(batch_size):
+            grad_w[j,i] += temp_grad[j,i] * abs(X[j,i])/col_sum[i]
+
+    grad_w = grad_w/(2*math.sqrt(MMD))
+    return grad_w
+
+
+
+def update_w(grad_w,batch_size,W,index):
+    for i in range(batch_size):
+        for j in range(batch_size):
+            W[i,j] = Adam(grad_w[i,j],W[i,j],index)
     return W
 
-#The refinement step to improve performance after training
+def Orthoganal_W(W,beta):
+    W = (1+ beta) * W - beta*(np.matmul(np.matmul(W,W), W))
+    return W
+
+
+#The refienment step to improve performance after training
 def refinement_step():
 
 
-    return
 
+    return 0
 
 def main():
     # Parse command line arguments
@@ -217,11 +355,20 @@ def main():
     elif args.precision == 'fp64':
         dtype = 'float64'
 
-    # Read input embeddings
+
+
+
+    print("reading embeddings and compressing...")
     srcfile = open(args.src_input, encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_input, encoding=args.encoding, errors='surrogateescape')
     src_words, x = embeddings.read(srcfile, dtype=dtype)
+
+    x = compressing(x,len(x[0]),50)
     trg_words, z = embeddings.read(trgfile, dtype=dtype)
+
+
+    z = compressing(z,len(z[0]),50)
+    print("finished reading embeddings and compressing")
 
     # NumPy/CuPy management
     if args.cuda:
@@ -277,34 +424,34 @@ def main():
             src_indices = xp.concatenate((xp.arange(sim_size), sim.argmax(axis=0)))
             trg_indices = xp.concatenate((sim.argmax(axis=1), xp.arange(sim_size)))
         del xsim, zsim, sim
-    # elif args.init_numerals:
-    #     numeral_regex = re.compile('^[0-9]+$')
-    #     src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
-    #     trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
-    #     numerals = src_numerals.intersection(trg_numerals)
-    #     for word in numerals:
-    #         src_indices.append(src_word2ind[word])
-    #         trg_indices.append(trg_word2ind[word])
-    # elif args.init_identical:
-    #     identical = set(src_words).intersection(set(trg_words))
-    #     for word in identical:
-    #         src_indices.append(src_word2ind[word])
-    #         trg_indices.append(trg_word2ind[word])
-    # else:
-    #     f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
-    #     for line in f:
-    #         src, trg = line.split()
-    #         try:
-    #             src_ind = src_word2ind[src]
-    #             trg_ind = trg_word2ind[trg]
-    #             src_indices.append(src_ind)
-    #             trg_indices.append(trg_ind)
-    #         except KeyError:
-    #             print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
+    elif args.init_numerals:
+        numeral_regex = re.compile('^[0-9]+$')
+        src_numerals = {word for word in src_words if numeral_regex.match(word) is not None}
+        trg_numerals = {word for word in trg_words if numeral_regex.match(word) is not None}
+        numerals = src_numerals.intersection(trg_numerals)
+        for word in numerals:
+            src_indices.append(src_word2ind[word])
+            trg_indices.append(trg_word2ind[word])
+    elif args.init_identical:
+        identical = set(src_words).intersection(set(trg_words))
+        for word in identical:
+            src_indices.append(src_word2ind[word])
+            trg_indices.append(trg_word2ind[word])
+    else:  
+        f = open(args.init_dictionary, encoding=args.encoding, errors='surrogateescape')
+        for line in f:
+            src, trg = line.split()
+            try:
+                src_ind = src_word2ind[src]
+                trg_ind = trg_word2ind[trg]
+                src_indices.append(src_ind)
+                trg_indices.append(trg_ind)
+            except KeyError:
+                print('WARNING: OOV dictionary entry ({0} - {1})'.format(src, trg), file=sys.stderr)
 
     print("seed dictionary built")
 
-    print("reading validation dictionary...")
+    
     # Read validation dictionary
     if args.validation is not None:
         f = open(args.validation, encoding=args.encoding, errors='surrogateescape')
@@ -323,18 +470,13 @@ def main():
         oov -= vocab  # If one of the translation options is in the vocabulary, then the entry is not an oov
         validation_coverage = len(validation) / (len(validation) + len(oov))
 
-    print("read validation dictionary")
-
     # Create log file
     if args.log:
         log = open(args.log, mode='w', encoding=args.encoding, errors='surrogateescape')
 
-    print("allocating memory...")
     # Allocate memory
     xw = xp.empty_like(x)
     zw = xp.empty_like(z)
-    # wx = xp.empty_like(x)
-    # wz = xp.empty_like(z)
     src_size = x.shape[0] if args.vocabulary_cutoff <= 0 else min(x.shape[0], args.vocabulary_cutoff)
     trg_size = z.shape[0] if args.vocabulary_cutoff <= 0 else min(z.shape[0], args.vocabulary_cutoff)
     simfwd = xp.empty((args.batch_size, trg_size), dtype=dtype)
@@ -351,9 +493,6 @@ def main():
     knn_sim_fwd = xp.zeros(src_size, dtype=dtype)
     knn_sim_bwd = xp.zeros(trg_size, dtype=dtype)
 
-    print("allocated memory")
-
-    print("beginning training...")
     # Training loop
     best_objective = objective = -100.
     it = 1
@@ -362,16 +501,64 @@ def main():
     t = time.time()
     end = not args.self_learning
 
-    optimizer = torch.optim.Adam(w, lr=0.0003)
 
-    # other = True
-    # if not other:
-    #     trainDataSpaceNetwork(x, z)
 
-    # end = True
-    while not end:
+    #print("Z: ",z.shape)
+    #print("X: ",x.shape)
+    u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
+#Need to reconstruct w here to fit our purpose The size of W will be batch_size * batch_size for each batch
+
+    w = vt.T.dot(u.T)
+    W = xp.asnumpy(w)
+    X = xp.asnumpy(x)
+    Y = xp.asnumpy(z)
+    batch_num = 100
+    batch_size = int(len(x)/100)
+    print("Batch_size: ",batch_size)
+    MMD = 1
+    beta = 0.01
+    index = 0
+    W_list = []
+    print(W.shape)
+    print(X.shape)
+    print(Y.shape)
+    exit()
+    for i in range(num_batch):
+        X =  X[i*batch_size:(i+1)*batch_size,:]
+        Y = Y[i*batch_size:(i+1)*batch_size,:]
+        W = np.ones((batch_size,batch_size))
+        while MMD > 0.00001:
+            #print(W.shape)
+            W = Orthoganal_W(W,beta)
+            print("Orthoganal W: ")
+            print(W)
+            print("Iteration:", index)
+            index += 1
+            #print(X)
+            #kermat(W, X, Y, 0, emb_dim)
+            MMD = compute_MMD(emb_dim,W,X,Y)
+            print("MMD Loss: ",MMD)
+            if MMD == 0:
+                print("Found exact solution!")
+                break
+            
+            grad_w = compute_grad_w(MMD,W,X,Y,batch_size)
+            #W = np.matmul((W + grad_w), np.linalg.pinv(X))
+            W = update_w(grad_w,batch_size,W,index)
+            W = Orthoganal_W(W,beta)
+            print("W: ")
+            print(W)
+            print("Current Result: ")
+            print(np.matmul(W,X))
+        W_list.append(W)
+        print("Index i ",i)
+    print(W_list)
+
+
+    '''while True:
 
         # Increase the keep probability if we have not improve in args.stochastic_interval iterations
+
         if it - last_improvement > args.stochastic_interval:
             if keep_prob >= 1.0:
                 end = True
@@ -379,29 +566,115 @@ def main():
             last_improvement = it
 
         # Update the embedding mapping
-        # if args.orthogonal or not end:  # orthogonal mapping
-        if it == 1:
+        if args.orthogonal or not end:  # orthogonal mapping
+            #print("Z: ",z.shape)
+            #print("X: ",x.shape)
             u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
             w = vt.T.dot(u.T)
-        if not end:
-            # u, s, vt = xp.linalg.svd(z[trg_indices].T.dot(x[src_indices]))
-            # w = vt.T.dot(u.T)
             x.dot(w, out=xw)
             zw[:] = z
+        elif args.unconstrained:  # unconstrained mapping
+            x_pseudoinv = xp.linalg.inv(x[src_indices].T.dot(x[src_indices])).dot(x[src_indices].T)
+            w = x_pseudoinv.dot(z[trg_indices])
+            x.dot(w, out=xw)
+            zw[:] = z
+        else:  # advanced mapping
 
+            # TODO xw.dot(wx2, out=xw) and alike not working
+            xw[:] = x
+            zw[:] = z
+
+            # STEP 1: Whitening
+            def whitening_transformation(m):
+                u, s, vt = xp.linalg.svd(m, full_matrices=False)
+                return vt.T.dot(xp.diag(1/s)).dot(vt)
+            if args.whiten:
+                wx1 = whitening_transformation(xw[src_indices])
+                wz1 = whitening_transformation(zw[trg_indices])
+                xw = xw.dot(wx1)
+                zw = zw.dot(wz1)
+
+            # STEP 2: Orthogonal mapping
+            wx2, s, wz2_t = xp.linalg.svd(xw[src_indices].T.dot(zw[trg_indices]))
+            wz2 = wz2_t.T
+            xw = xw.dot(wx2)
+            zw = zw.dot(wz2)
+
+            # STEP 3: Re-weighting
+            xw *= s**args.src_reweight
+            zw *= s**args.trg_reweight
+
+          
+            # STEP 4: De-whitening
+            if args.src_dewhiten == 'src':
+                xw = xw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            elif args.src_dewhiten == 'trg':
+                xw = xw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+            if args.trg_dewhiten == 'src':
+                zw = zw.dot(wx2.T.dot(xp.linalg.inv(wx1)).dot(wx2))
+            elif args.trg_dewhiten == 'trg':
+                zw = zw.dot(wz2.T.dot(xp.linalg.inv(wz1)).dot(wz2))
+
+            # STEP 5: Dimensionality reduction
+            if args.dim_reduction > 0:
+                xw = xw[:, :args.dim_reduction]
+                zw = zw[:, :args.dim_reduction]
         # Self-learning
         if end:
             break
         else:
-             #Need to Update here for Updating W
+            #Need to Update here for Updating W
 
-            mask = numpy.random.choice([False, True], len(x), p=[0.99, 0.01])
-            batch_x = xp.asarray(xw[mask])
-            batch_y = xp.asarray(zw[mask])
-            objective = MMD(len(batch_x), w, batch_x, batch_y)
+            # Update the training dictionary
+            if args.direction in ('forward', 'union'):
+                if args.csls_neighborhood > 0:
+                    for i in range(0, trg_size, simbwd.shape[0]):
+                        j = min(i + simbwd.shape[0], trg_size)
+                        #simbwd = cp.float64(simbwd)
+                        print("Check data type zw:",zw.dtype)
+                        print("Check data type xw:",xw.dtype)
+                        print("Check data type simbwd: ",simbwd.dtype)
+                        #print("Check! zw: ",zw[i:j])
+                        #print("Check! xw : ",xw[:src_size])             
+                        zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+                        knn_sim_bwd[i:j] = topk_mean(simbwd[:j-i], k=args.csls_neighborhood, inplace=True)
+                for i in range(0, src_size, simfwd.shape[0]):
+                    j = min(i + simfwd.shape[0], src_size)
+                    xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+                    simfwd[:j-i].max(axis=1, out=best_sim_forward[i:j])
+                    simfwd[:j-i] -= knn_sim_bwd/2  # Equivalent to the real CSLS scores for NN
+                    dropout(simfwd[:j-i], 1 - keep_prob).argmax(axis=1, out=trg_indices_forward[i:j])
+            if args.direction in ('backward', 'union'):
+                if args.csls_neighborhood > 0:
+                    for i in range(0, src_size, simfwd.shape[0]):
+                        j = min(i + simfwd.shape[0], src_size)
+                        xw[i:j].dot(zw[:trg_size].T, out=simfwd[:j-i])
+                        knn_sim_fwd[i:j] = topk_mean(simfwd[:j-i], k=args.csls_neighborhood, inplace=True)
+                for i in range(0, trg_size, simbwd.shape[0]):
+                    j = min(i + simbwd.shape[0], trg_size)
+                    zw[i:j].dot(xw[:src_size].T, out=simbwd[:j-i])
+                    simbwd[:j-i].max(axis=1, out=best_sim_backward[i:j])
+                    simbwd[:j-i] -= knn_sim_fwd/2  # Equivalent to the real CSLS scores for NN
+                    dropout(simbwd[:j-i], 1 - keep_prob).argmax(axis=1, out=src_indices_backward[i:j])
+            if args.direction == 'forward':
+                src_indices = src_indices_forward
+                trg_indices = trg_indices_forward
+            elif args.direction == 'backward':
+                src_indices = src_indices_backward
+                trg_indices = trg_indices_backward
+            elif args.direction == 'union':
+                src_indices = xp.concatenate((src_indices_forward, src_indices_backward))
+                trg_indices = xp.concatenate((trg_indices_forward, trg_indices_backward))
 
-            optimizer.step()
-            w = orthogonalize(w)
+            #Need to change objective to MMD
+
+            # Objective function evaluation
+            if args.direction == 'forward':
+                objective = xp.mean(best_sim_forward).tolist()
+            elif args.direction == 'backward':
+                objective = xp.mean(best_sim_backward).tolist()
+            elif args.direction == 'union':
+                objective = (xp.mean(best_sim_forward) + xp.mean(best_sim_backward)).tolist() / 2
             if objective - best_objective >= args.threshold:
                 last_improvement = it
                 best_objective = objective
@@ -419,8 +692,7 @@ def main():
             if args.verbose:
                 print(file=sys.stderr)
                 print('ITERATION {0} ({1:.2f}s)'.format(it, duration), file=sys.stderr)
-                # print('\t- Objective:        {0:9.4f}%'.format(100 * objective), file=sys.stderr)
-                print("\t- Objective:   ", objective)
+                print('\t- Objective:        {0:9.4f}%'.format(100 * objective), file=sys.stderr)
                 print('\t- Drop probability: {0:9.4f}%'.format(100 - 100*keep_prob), file=sys.stderr)
                 if args.validation is not None:
                     print('\t- Val. similarity:  {0:9.4f}%'.format(100 * similarity), file=sys.stderr)
@@ -432,30 +704,17 @@ def main():
                     100 * similarity, 100 * accuracy, 100 * validation_coverage) if args.validation is not None else ''
                 print('{0}\t{1:.6f}\t{2}\t{3:.6f}'.format(it, 100 * objective, val, duration), file=log)
                 log.flush()
-            if it == 10:
-                end = True
 
         t = time.time()
         it += 1
 
-    print(xw.shape)
-    print(z.shape)
-    print(sklearn.metrics.pairwise.cosine_similarity(xp.asnumpy(xw), xp.asnumpy(z)))
-    exit()
-
-    print("finished training")
-
-    print("writing embeddings...")
     # Write mapped embeddings
     srcfile = open(args.src_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     trgfile = open(args.trg_output, mode='w', encoding=args.encoding, errors='surrogateescape')
     embeddings.write(src_words, xw, srcfile)
-    # embeddings.write(trg_words, zw, trgfile)
     embeddings.write(trg_words, zw, trgfile)
     srcfile.close()
-    trgfile.close()
-
-    print("wrote embeddings")
+    trgfile.close()'''
 
 
 if __name__ == '__main__':
